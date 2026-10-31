@@ -39,18 +39,15 @@ if (-not (Test-Path $PythonExe)) {
     & $PythonExe -m pip install -r requirements.txt
 }
 
-# 2. Check Rust Gateway binary
+# 2. Ensure Rust Gateway binary is built
 $RustExe = Join-Path $PSScriptRoot "rust-gateway\target\release\rust-gateway.exe"
-$UseRustGateway = $true
-
 if (-not (Test-Path $RustExe)) {
+    Write-Host "Building Rust Concurrency Core (release mode)..." -ForegroundColor Cyan
     if (Get-Command "cargo" -ErrorAction SilentlyContinue) {
-        Write-Host "Compiling Rust Concurrency Gateway in release mode..." -ForegroundColor Cyan
         cargo build --release --manifest-path (Join-Path $PSScriptRoot "rust-gateway\Cargo.toml")
-    }
-    if (-not (Test-Path $RustExe)) {
-        Write-Host "Rust binary not found. Falling back to direct FastAPI worker on port 8000." -ForegroundColor Yellow
-        $UseRustGateway = $false
+    } else {
+        Write-Error "Cargo was not found in PATH. Please install Rust from https://rustup.rs to run the Rust Concurrency Core."
+        exit 1
     }
 }
 
@@ -86,32 +83,20 @@ Write-Host "--------------------------------------------------------`n" -Foregro
 # Open browser
 Start-Process "http://localhost:8000"
 
-if ($UseRustGateway) {
-    # Start GPU Worker on port 8001
-    Write-Host "[1/2] Starting GPU Whisper Worker on port 8001..." -ForegroundColor Green
-    $WorkerProcess = Start-Process -FilePath $PythonExe -ArgumentList "-m uvicorn backend.main:app --host 127.0.0.1 --port 8001" -PassThru -NoNewWindow
-    Start-Sleep -Seconds 2
+# Start GPU Worker on port 8001
+Write-Host "[1/2] Starting GPU Whisper Worker on port 8001..." -ForegroundColor Green
+$WorkerProcess = Start-Process -FilePath $PythonExe -ArgumentList "-m uvicorn backend.main:app --host 127.0.0.1 --port 8001" -PassThru -NoNewWindow
+Start-Sleep -Seconds 2
 
-    # Run Rust Gateway on port 8000
-    Write-Host "Rust Concurrency Core active on port 8000. Press Ctrl+C anytime to stop.`n" -ForegroundColor Green
-    try {
-        & $RustExe
-    } finally {
-        Write-Host "`nShutting down GPU Worker..." -ForegroundColor Gray
-        Stop-Process -Id $WorkerProcess.Id -ErrorAction SilentlyContinue
-        if ($TunnelProcess) {
-            Write-Host "Shutting down Cloudflare Tunnel..." -ForegroundColor Gray
-            Stop-Process -Id $TunnelProcess.Id -ErrorAction SilentlyContinue
-        }
-    }
-} else {
-    # Run Python server directly on port 8000
-    Write-Host "Starting Whisper Subtitle Studio directly on port 8000..." -ForegroundColor Green
-    try {
-        & $PythonExe -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-    } finally {
-        if ($TunnelProcess) {
-            Stop-Process -Id $TunnelProcess.Id -ErrorAction SilentlyContinue
-        }
+# Run Rust Gateway on port 8000
+Write-Host "[2/2] Rust Concurrency Core active on port 8000. Press Ctrl+C anytime to stop.`n" -ForegroundColor Green
+try {
+    & $RustExe
+} finally {
+    Write-Host "`nShutting down GPU Worker..." -ForegroundColor Gray
+    Stop-Process -Id $WorkerProcess.Id -ErrorAction SilentlyContinue
+    if ($TunnelProcess) {
+        Write-Host "Shutting down Cloudflare Tunnel..." -ForegroundColor Gray
+        Stop-Process -Id $TunnelProcess.Id -ErrorAction SilentlyContinue
     }
 }

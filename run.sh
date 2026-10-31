@@ -28,19 +28,16 @@ fi
 
 PYTHON_EXE="$VENV_DIR/bin/python"
 
-# 2. Check Rust Gateway binary
+# 2. Ensure Rust Gateway binary is built
 RUST_EXE="$SCRIPT_DIR/rust-gateway/target/release/rust-gateway"
-USE_RUST=false
-
 if [ ! -f "$RUST_EXE" ]; then
+    echo "Building Rust Concurrency Gateway in release mode..."
     if command -v cargo &> /dev/null; then
-        echo "Building Rust Concurrency Gateway in release mode..."
         cargo build --release --manifest-path "$SCRIPT_DIR/rust-gateway/Cargo.toml"
+    else
+        echo "[ERROR] Cargo was not found in PATH. Please install Rust from https://rustup.rs"
+        exit 1
     fi
-fi
-
-if [ -f "$RUST_EXE" ]; then
-    USE_RUST=true
 fi
 
 # Detect Local IP
@@ -64,22 +61,18 @@ elif command -v open &> /dev/null; then
     open "http://localhost:8000" &> /dev/null &
 fi
 
-if [ "$USE_RUST" = true ]; then
-    echo "[1/2] Starting GPU Whisper Worker on port 8001..."
-    "$PYTHON_EXE" -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 &
-    WORKER_PID=$!
+echo "[1/2] Starting GPU Whisper Worker on port 8001..."
+"$PYTHON_EXE" -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 &
+WORKER_PID=$!
 
-    cleanup() {
-        echo ""
-        echo "Shutting down..."
-        kill "$WORKER_PID" 2>/dev/null || true
-    }
-    trap cleanup EXIT INT TERM
+cleanup() {
+    echo ""
+    echo "Shutting down..."
+    kill "$WORKER_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
-    sleep 2
-    echo "[2/2] Rust Concurrency Core active on port 8000. Press Ctrl+C anytime to stop."
-    "$RUST_EXE"
-else
-    echo "Rust Gateway binary not found. Running directly via FastAPI on port 8000..."
-    "$PYTHON_EXE" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-fi
+sleep 2
+echo "[2/2] Rust Concurrency Core active on port 8000. Press Ctrl+C anytime to stop."
+"$RUST_EXE"
+

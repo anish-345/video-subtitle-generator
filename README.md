@@ -1,13 +1,23 @@
 # 🎬 Whisper GPU Subtitle Studio
 
-A modern, high-performance web application and concurrency engine that generates high-accuracy subtitles for videos using **Whisper** and **Alibaba SenseVoice** accelerated by GPU (CUDA / Tensor Core with FP16/INT8) or CPU fallback. Features live interactive synced captions in the browser, studio audio denoising, and multi-format exports (`.srt`, `.vtt`, `.txt`, `.mp3`).
+A modern, high-performance web application built as a **single unified system** combining a high-concurrency **Rust Gateway** (Port 8000) with a hardware-accelerated **Python GPU Inference Worker** (Port 8001). Generates high-accuracy subtitles for videos using **Whisper** and **Alibaba SenseVoice** accelerated by GPU (CUDA / Tensor Cores) or CPU, with real-time in-browser caption playback, studio audio denoising, and multi-format exports (`.srt`, `.vtt`, `.txt`, `.mp3`).
+
+---
+
+## 🏛️ System Architecture
+
+The project operates as a unified dual-engine pipeline:
+1. **Rust Concurrency Core (Port 8000)**: Built with Tokio + Axum. Serves the web UI, streams SSE progress events, queues concurrent client video uploads, and serializes GPU access to eliminate out-of-memory errors.
+2. **CUDA GPU Inference Worker (Port 8001)**: Built with FastAPI + `faster-whisper` + CTranslate2. Executes batch tensor-core speech recognition and audio normalization.
+
+Both services are automatically managed and started together by the unified launch scripts (`run.ps1`, `setup_and_run.bat`, or `run.sh`).
 
 ---
 
 ## ✨ Features
 
+- 🦀 **Rust Concurrency Core**: Tokio + Axum gateway that manages concurrent client uploads, GPU task serialization to prevent OOM errors, and real-time streaming progress.
 - ⚡ **Hardware Acceleration**: Automatically detects NVIDIA GPUs (CUDA / Tensor Cores via `faster-whisper` and CTranslate2) with `float16` compute type, falling back smoothly to CPU `int8` on systems without a dedicated GPU.
-- 🦀 **Rust Concurrency Core**: Includes an optional high-performance Tokio + Axum gateway that manages concurrent client uploads, GPU task serialization to prevent OOM errors, and real-time streaming progress.
 - 🎙️ **Acoustic Noise Cancellation & Voice Clarity**:
   - Automatically filters extracted audio with adaptive FFT spectral denoising (`afftdn`), sub-bass rumble cuts (<80Hz), and high-frequency hiss removal (>12kHz).
   - Enhances human vocal formants (2.8kHz presence boost) and applies Dynamic Audio Normalization (`dynaudnorm`) to boost faint or whispering voices without loud distortion.
@@ -46,10 +56,9 @@ A modern, high-performance web application and concurrency engine that generates
    - **Windows**: `winget install Gyan.FFmpeg` or `choco install ffmpeg`, or place `ffmpeg.exe` in `bin/` or `PATH`.
    - **macOS**: `brew install ffmpeg`
    - **Linux**: `sudo apt install ffmpeg` (Ubuntu/Debian) or `sudo pacman -S ffmpeg` (Arch)
-3. **NVIDIA GPU & CUDA Drivers** *(Optional, for GPU acceleration)*:
+3. **Rust & Cargo**: Required to compile and run the high-concurrency Rust Gateway (`https://rustup.rs`).
+4. **NVIDIA GPU & CUDA Drivers** *(Optional, for hardware acceleration)*:
    - For NVIDIA GPU acceleration, ensure current NVIDIA drivers and CUDA are installed.
-4. **Rust & Cargo** *(Optional, for Rust Gateway concurrency)*:
-   - If Rust is not installed, the application automatically runs directly via Python FastAPI on port 8000.
 
 ---
 
