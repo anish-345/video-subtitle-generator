@@ -2,13 +2,13 @@ use axum::{
     body::Body,
     extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{delete, get, post},
     Router,
 };
 use axum::extract::Multipart;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -17,13 +17,53 @@ use std::{
     },
     time::Duration,
 };
-use tokio::fs::{self, File};
+use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 const WORKER_URL: &str = "http://127.0.0.1:8001";
+
+fn which_cmd(cmd: &str) -> bool {
+    #[cfg(windows)]
+    let check = std::process::Command::new("where")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    #[cfg(not(windows))]
+    let check = std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    matches!(check, Ok(status) if status.success())
+}
+
+fn find_python(base_dir: &Path) -> Option<PathBuf> {
+    // 1. Embedded python in base_dir/python/python.exe
+    let embedded = base_dir.join("python").join("python.exe");
+    if embedded.is_file() {
+        return Some(embedded);
+    }
+    // 2. Virtual environment in base_dir/.venv/Scripts/python.exe (or bin/python on Unix)
+    #[cfg(windows)]
+    let venv = base_dir.join(".venv").join("Scripts").join("python.exe");
+    #[cfg(not(windows))]
+    let venv = base_dir.join(".venv").join("bin").join("python");
+    if venv.is_file() {
+        return Some(venv);
+    }
+    // 3. System python in PATH
+    for cmd in ["python", "py", "python3"] {
+        if which_cmd(cmd) {
+            return Some(PathBuf::from(cmd));
+        }
+    }
+    None
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -85,6 +125,63 @@ async fn main() {
 
     let frontend_dir = base_dir.join("frontend");
 
+    // Check if worker is responding; if not, auto-spawn it as child process
+    let mut worker_child: Option<std::process::Child> = None;
+    let worker_alive = state
+        .http_client
+        .get(format!("{WORKER_URL}/api/status"))
+        .timeout(Duration::from_millis(1000))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    if !worker_alive {
+        if let Some(py_path) = find_python(&base_dir) {
+            println!("🚀 Auto-starting GPU Whisper Worker on port 8001...");
+            let mut cmd = std::process::Command::new(&py_path);
+            cmd.args(["-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "8001"]);
+            cmd.current_dir(&base_dir);
+
+            // Prepend base_dir/bin to PATH so local ffmpeg.exe is found
+            let local_bin = base_dir.join("bin");
+            if local_bin.exists() {
+                if let Some(path_var) = std::env::var_os("PATH") {
+                    let mut paths = std::env::split_paths(&path_var).collect::<Vec<_>>();
+                    paths.insert(0, local_bin);
+                    if let Ok(new_path) = std::env::join_paths(paths) {
+                        cmd.env("PATH", new_path);
+                    }
+                }
+            }
+
+            match cmd.spawn() {
+                Ok(child) => {
+                    worker_child = Some(child);
+                    println!("✓ GPU Whisper Worker launched successfully.");
+                }
+                Err(e) => {
+                    eprintln!("⚠️ Could not auto-spawn Python worker: {e}");
+                }
+            }
+        } else {
+            println!("⚠️ Python environment not found. Please ensure Python worker runs on port 8001.");
+        }
+    } else {
+        println!("✓ Attached to existing GPU Worker on port 8001.");
+    }
+
+    // Auto-open browser in background
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        #[cfg(windows)]
+        let _ = std::process::Command::new("cmd").args(["/c", "start", "http://localhost:8000"]).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg("http://localhost:8000").spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg("http://localhost:8000").spawn();
+    });
+
     let app = Router::new()
         .route("/api/status", get(get_system_status))
         .route("/api/transcribe", post(handle_transcribe))
@@ -102,11 +199,26 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
     println!("=================================================");
-    println!("  🦀 RUST CONCURRENCY CORE ACTIVE ON PORT 8000   ");
-    println!("  Delegating GPU Inference to CUDA Worker (8001) ");
+    println!("  🦀 WHISPER SUBTITLE STUDIO ACTIVE ON PORT 8000  ");
+    println!("  UI & API: http://localhost:8000               ");
+    println!("  Press Ctrl+C to stop the application.          ");
     println!("=================================================");
 
-    axum::serve(listener, app).await.unwrap();
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c().await.ok();
+        println!("\n[Shutdown] Shutting down application...");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .unwrap();
+
+    if let Some(mut child) = worker_child {
+        println!("[Shutdown] Terminating GPU Worker child process...");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 async fn get_system_status(State(state): State<AppState>) -> impl IntoResponse {

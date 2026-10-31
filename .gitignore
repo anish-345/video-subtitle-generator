@@ -82,7 +82,8 @@ desktop.ini
 
 # IDE & Editor Configurations
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~
@@ -94,4 +95,10 @@ desktop.ini
 .coverage
 htmlcov/
 *.log
+
+# Distribution & Packaging
+package/
+dist/
+*.exe
+!installer.iss
 

@@ -49,7 +49,16 @@ Both services are automatically managed and started together by the unified laun
 
 ---
 
-## 📋 Prerequisites
+## 📦 Standalone Windows App & Installer
+
+For users on other Windows devices who do not want to install Python, Rust, or FFmpeg:
+1. Download **`WhisperStudio-Setup-x64.exe`** (Installer) or **`WhisperStudio-Portable-x64.zip`** from the [GitHub Releases](https://github.com/anish-345/video-subtitle-generator/releases) or the latest [GitHub Actions Build Artifacts](https://github.com/anish-345/video-subtitle-generator/actions).
+2. Run the installer or extract the zip.
+3. Launch `rust-gateway.exe` (or Desktop shortcut). It automatically initializes the GPU worker, binds the concurrency gateway, and opens the browser interface.
+
+---
+
+## 📋 Prerequisites (Building from Source)
 
 1. **Python 3.10+**: Ensure Python is installed and available in your `PATH`.
 2. **FFmpeg**: Required for audio extraction and conversion.
