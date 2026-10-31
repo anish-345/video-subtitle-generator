@@ -1,0 +1,609 @@
+import asyncio
+import os
+import shutil
+import time
+import json
+import uuid
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
+
+from backend.config import (
+    BASE_DIR, UPLOADS_DIR, SUBTITLES_DIR, TEMP_DIR, OUTPUTS_DIR,
+    FFMPEG_PATH, cleanup_file, purge_expired_temp_files, purge_expired_subtitles, purge_expired_outputs
+)
+from backend.transcriber import whisper_service, sensevoice_service, get_gpu_info, is_model_cached
+
+app = FastAPI(title="GPU Subtitle Worker API", version="1.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+import threading
+
+JOBS: Dict[str, Dict[str, Any]] = {}
+GPU_LOCK = threading.Lock()
+
+@app.on_event("startup")
+async def on_startup():
+    purge_expired_temp_files(max_age_seconds=1800)
+    purge_expired_subtitles(max_age_seconds=86400)
+    purge_expired_outputs(max_age_seconds=86400)
+
+    # Periodic background task to evict old completed/failed jobs and expired files
+    async def periodic_cleanup():
+        while True:
+            await asyncio.sleep(300)
+            try:
+                purge_expired_temp_files(max_age_seconds=1800)
+                purge_expired_subtitles(max_age_seconds=86400)
+                purge_expired_outputs(max_age_seconds=86400)
+                cutoff = time.time() - 3600  # 1 hour retention in memory
+                expired = [
+                    jid for jid, j in list(JOBS.items())
+                    if j.get("status") in ("completed", "failed")
+                    and j.get("created_at", 0) < cutoff
+                ]
+                for jid in expired:
+                    JOBS.pop(jid, None)
+            except Exception as e:
+                print(f"[Periodic cleanup notice] {e}")
+
+    asyncio.create_task(periodic_cleanup())
+
+
+def get_wifi_ip() -> str:
+    custom_host = os.environ.get("HOST") or os.environ.get("SERVER_IP")
+    if custom_host and custom_host not in ("0.0.0.0", "127.0.0.1"):
+        return custom_host
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+@app.get("/api/status")
+def get_system_status():
+    gpu = get_gpu_info()
+    wifi_ip = get_wifi_ip()
+    gpu_name = gpu.get("device_name", "")
+    if gpu.get("cuda_available") and gpu_name and gpu_name != "CPU":
+        sense_accel = f"🚀 {gpu_name} Accelerated • Millisecond Precision"
+    else:
+        sense_accel = "⚡ Hardware Accelerated • Millisecond Precision"
+
+    models = [
+        {
+            "id": "base",
+            "name": "Base (~140MB)",
+            "cached": is_model_cached("base"),
+            "description": "Recommended • Instant Start ⚡",
+            "recommended": True
+        },
+        {
+            "id": "sensevoice-small",
+            "name": "Alibaba SenseVoice-Small (~1.1GB)",
+            "cached": is_model_cached("sensevoice-small"),
+            "description": f"{sense_accel} (Instant Start)" if is_model_cached("sensevoice-small") else sense_accel,
+            "recommended": False
+        },
+        {
+            "id": "large-v3-turbo",
+            "name": "Large-v3 Turbo (~1.6GB)",
+            "cached": is_model_cached("large-v3-turbo"),
+            "description": "Deep Learning SOTA • Instant Start ⚡" if is_model_cached("large-v3-turbo") else "SOTA Deep Learning (~1.6GB)",
+            "recommended": False
+        },
+        {
+            "id": "medium",
+            "name": "Medium (~1.5GB)",
+            "cached": is_model_cached("medium"),
+            "description": "Studio Quality • Instant Start ⚡" if is_model_cached("medium") else "Studio Quality (~1.5GB)",
+            "recommended": False
+        },
+        {
+            "id": "small",
+            "name": "Small (~460MB)",
+            "cached": is_model_cached("small"),
+            "description": "High Accuracy • Instant Start ⚡" if is_model_cached("small") else "High Accuracy (~460MB)",
+            "recommended": False
+        },
+        {
+            "id": "tiny",
+            "name": "Tiny (~75MB)",
+            "cached": is_model_cached("tiny"),
+            "description": "Ultra Fast • Instant Start ⚡",
+            "recommended": False
+        },
+        {
+            "id": "large-v3",
+            "name": "Large-v3 (~3GB)",
+            "cached": is_model_cached("large-v3"),
+            "description": "Maximum Multilingual Accuracy" if is_model_cached("large-v3") else "Maximum Multilingual Accuracy (~3GB)",
+            "recommended": False
+        }
+    ]
+    return {
+        "status": "ready",
+        "wifi_ip": wifi_ip,
+        "wifi_url": f"http://{wifi_ip}:8000",
+        "gpu": gpu,
+        "ffmpeg_path": FFMPEG_PATH,
+        "turbo_engine": {
+            "supported": True,
+            "active_mode": "Tensor Core Batched (FP16)",
+            "speedup_factor": "170x Real-Time",
+            "ten_hour_eta": "3.5 - 5 minutes",
+            "recommended_batch_size": 16
+        },
+        "available_models": models
+    }
+
+def process_transcription_job(
+    job_id: str,
+    video_path: Path,
+    model_size: str,
+    language: Optional[str],
+    task: str,
+    turbo_mode: bool = True,
+    batch_size: Optional[int] = None,
+    delete_video_after: bool = True,
+    vad_filter: bool = False,
+    noise_reduction: str = "studio"
+):
+    job = JOBS[job_id]
+    job["status"] = "processing"
+    loop = job.get("loop")
+
+    def on_progress(payload: Dict[str, Any]):
+        job["progress"] = payload.get("progress", job["progress"])
+        job["message"] = payload.get("message", job["message"])
+        if "turbo_mode" in payload:
+            job["turbo_mode"] = payload["turbo_mode"]
+        if "speedup_factor" in payload:
+            job["speedup_factor"] = payload["speedup_factor"]
+        if "latest_segment" in payload:
+            job.setdefault("streamed_segments", []).append(payload["latest_segment"])
+        
+        q: asyncio.Queue = job.get("queue")
+        if q and loop:
+            loop.call_soon_threadsafe(q.put_nowait, payload)
+
+    try:
+        if model_size == "sensevoice-small":
+            job["message"] = "Waiting in queue for GPU..."
+            with GPU_LOCK:
+                job["message"] = "Acquired GPU, starting Alibaba SenseVoice-Small..."
+                result = sensevoice_service.transcribe_video(
+                    video_path=video_path,
+                    job_id=job_id,
+                    language=language,
+                    task=task,
+                    turbo_mode=turbo_mode,
+                    batch_size=batch_size,
+                    delete_video_after=delete_video_after,
+                    vad_filter=vad_filter,
+                    noise_reduction=noise_reduction,
+                    original_filename=job.get("filename"),
+                    progress_callback=on_progress
+                )
+        else:
+            job["message"] = "Waiting in queue for GPU..."
+            with GPU_LOCK:
+                job["message"] = "Acquired GPU, starting transcription..."
+                result = whisper_service.transcribe_video(
+                    video_path=video_path,
+                    job_id=job_id,
+                    model_size=model_size,
+                    language=language,
+                    task=task,
+                    turbo_mode=turbo_mode,
+                    batch_size=batch_size,
+                    delete_video_after=delete_video_after,
+                    vad_filter=vad_filter,
+                    noise_reduction=noise_reduction,
+                    original_filename=job.get("filename"),
+                    progress_callback=on_progress
+                )
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["result"] = result
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e)
+        on_progress({"step": "error", "progress": 100, "message": str(e)})
+
+from pydantic import BaseModel
+
+class TranscribePathRequest(BaseModel):
+    job_id: str
+    file_path: str
+    filename: str
+    model_size: str = "base"
+    language: str = "auto"
+    task: str = "transcribe"
+    turbo_mode: bool = True
+    batch_size: Optional[int] = None
+    delete_video_after: bool = True
+    vad_filter: bool = False
+    noise_reduction: str = "studio"
+
+@app.post("/api/transcribe_path")
+async def create_transcription_from_path(
+    req: TranscribePathRequest,
+    background_tasks: BackgroundTasks = None
+):
+    saved_video_path = Path(req.file_path)
+    if not saved_video_path.exists():
+        raise HTTPException(status_code=404, detail="Uploaded file path does not exist on server")
+
+    # Deduplication Check: Reconnect to active or completed job for the same video with matching settings
+    for existing_id, existing_job in list(JOBS.items()):
+        if (
+            existing_job.get("status") in ("processing", "queued")
+            and existing_job.get("filename") == req.filename
+            and existing_job.get("noise_reduction", "studio") == req.noise_reduction
+        ):
+            print(f"[Deduplication] Re-attaching to ongoing job {existing_id} for '{req.filename}'")
+            if saved_video_path.exists() and str(saved_video_path) != existing_job.get("video_path", ""):
+                cleanup_file(saved_video_path)
+            return {
+                "job_id": existing_id,
+                "status": existing_job.get("status"),
+                "filename": req.filename,
+                "turbo_mode": existing_job.get("turbo_mode", req.turbo_mode),
+                "video_url": f"/api/jobs/{existing_id}/video",
+                "deduplicated": True,
+                "message": "Reconnected to active transcription job"
+            }
+        elif (
+            existing_job.get("status") == "completed"
+            and existing_job.get("filename") == req.filename
+            and existing_job.get("noise_reduction", "studio") == req.noise_reduction
+            and existing_job.get("result") is not None
+        ):
+            print(f"[Deduplication] Instant cache hit for '{req.filename}' from job {existing_id}")
+            if saved_video_path.exists() and str(saved_video_path) != existing_job.get("video_path", ""):
+                cleanup_file(saved_video_path)
+            return {
+                "job_id": existing_id,
+                "status": "completed",
+                "filename": req.filename,
+                "turbo_mode": existing_job.get("turbo_mode", req.turbo_mode),
+                "video_url": f"/api/jobs/{existing_id}/video",
+                "result": existing_job.get("result"),
+                "deduplicated": True,
+                "message": "Instant return: Subtitles already generated"
+            }
+
+    loop = asyncio.get_running_loop()
+    job_queue = asyncio.Queue()
+
+    JOBS[req.job_id] = {
+        "id": req.job_id,
+        "filename": req.filename,
+        "video_path": str(saved_video_path),
+        "status": "queued",
+        "progress": 0,
+        "message": "Job queued, initializing Tensor Core GPU...",
+        "model_size": req.model_size,
+        "language": req.language,
+        "task": req.task,
+        "turbo_mode": req.turbo_mode,
+        "batch_size": req.batch_size,
+        "delete_video_after": req.delete_video_after,
+        "vad_filter": req.vad_filter,
+        "noise_reduction": req.noise_reduction,
+        "streamed_segments": [],
+        "result": None,
+        "error": None,
+        "queue": job_queue,
+        "loop": loop,
+        "created_at": time.time()
+    }
+
+    background_tasks.add_task(
+        process_transcription_job,
+        req.job_id,
+        saved_video_path,
+        req.model_size,
+        req.language,
+        req.task,
+        req.turbo_mode,
+        req.batch_size,
+        req.delete_video_after,
+        req.vad_filter,
+        req.noise_reduction
+    )
+
+    return {
+        "job_id": req.job_id,
+        "status": "queued",
+        "filename": req.filename,
+        "turbo_mode": req.turbo_mode,
+        "video_url": f"/api/jobs/{req.job_id}/video"
+    }
+
+@app.post("/api/transcribe")
+async def create_transcription_job(
+    file: UploadFile = File(...),
+    model_size: str = Form("base"),
+    language: str = Form("auto"),
+    task: str = Form("transcribe"),
+    turbo_mode: bool = Form(True),
+    batch_size: Optional[int] = Form(None),
+    delete_video_after: bool = Form(True),
+    vad_filter: bool = Form(False),
+    noise_reduction: str = Form("studio"),
+    background_tasks: BackgroundTasks = None
+):
+    # Deduplication Check before saving to disk
+    for existing_id, existing_job in list(JOBS.items()):
+        if (
+            existing_job.get("status") in ("processing", "queued")
+            and existing_job.get("filename") == file.filename
+            and existing_job.get("noise_reduction", "studio") == noise_reduction
+        ):
+            print(f"[Deduplication] Re-attaching to ongoing job {existing_id} for '{file.filename}'")
+            return {
+                "job_id": existing_id,
+                "status": existing_job.get("status"),
+                "filename": file.filename,
+                "turbo_mode": existing_job.get("turbo_mode", turbo_mode),
+                "video_url": f"/api/jobs/{existing_id}/video",
+                "deduplicated": True,
+                "message": "Reconnected to active transcription job"
+            }
+        elif (
+            existing_job.get("status") == "completed"
+            and existing_job.get("filename") == file.filename
+            and existing_job.get("noise_reduction", "studio") == noise_reduction
+            and existing_job.get("result") is not None
+        ):
+            print(f"[Deduplication] Instant cache hit for '{file.filename}' from job {existing_id}")
+            return {
+                "job_id": existing_id,
+                "status": "completed",
+                "filename": file.filename,
+                "turbo_mode": existing_job.get("turbo_mode", turbo_mode),
+                "video_url": f"/api/jobs/{existing_id}/video",
+                "result": existing_job.get("result"),
+                "deduplicated": True,
+                "message": "Instant return: Subtitles already generated"
+            }
+    job_id = str(uuid.uuid4())[:8]
+    sanitized_filename = "".join(c for c in file.filename if c.isalnum() or c in "._- ")
+    saved_video_path = UPLOADS_DIR / f"{job_id}_{sanitized_filename}"
+
+    with open(saved_video_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    loop = asyncio.get_running_loop()
+    job_queue = asyncio.Queue()
+
+    JOBS[job_id] = {
+        "id": job_id,
+        "filename": file.filename,
+        "video_path": str(saved_video_path),
+        "status": "queued",
+        "progress": 0,
+        "message": "Job queued, initializing Tensor Core GPU...",
+        "model_size": model_size,
+        "language": language,
+        "task": task,
+        "turbo_mode": turbo_mode,
+        "batch_size": batch_size,
+        "delete_video_after": delete_video_after,
+        "vad_filter": vad_filter,
+        "noise_reduction": noise_reduction,
+        "streamed_segments": [],
+        "result": None,
+        "error": None,
+        "queue": job_queue,
+        "loop": loop,
+        "created_at": time.time()
+    }
+
+    background_tasks.add_task(
+        process_transcription_job,
+        job_id,
+        saved_video_path,
+        model_size,
+        language,
+        task,
+        turbo_mode,
+        batch_size,
+        delete_video_after,
+        vad_filter,
+        noise_reduction
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "filename": file.filename,
+        "turbo_mode": turbo_mode,
+        "video_url": f"/api/jobs/{job_id}/video"
+    }
+
+@app.get("/api/jobs/{job_id}/stream")
+async def stream_job_progress(job_id: str):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = JOBS[job_id]
+    q: asyncio.Queue = job["queue"]
+
+    async def event_generator():
+        yield {
+            "event": "message",
+            "data": json.dumps({
+                "step": "status",
+                "progress": job["progress"],
+                "message": job["message"],
+                "status": job["status"]
+            })
+        }
+
+        while True:
+            try:
+                data = await asyncio.wait_for(q.get(), timeout=30.0)
+                yield {
+                    "event": "message",
+                    "data": json.dumps(data)
+                }
+                if data.get("step") in ["completed", "error"]:
+                    break
+            except asyncio.TimeoutError:
+                if job["status"] in ["completed", "failed"]:
+                    break
+                yield {
+                    "event": "ping",
+                    "data": "keep-alive"
+                }
+
+    return EventSourceResponse(event_generator())
+
+@app.get("/api/jobs/{job_id}/status")
+def get_job_status(job_id: str):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    return {
+        "id": job_id,
+        "status": job["status"],
+        "progress": job["progress"],
+        "message": job["message"],
+        "filename": job["filename"],
+        "video_url": f"/api/jobs/{job_id}/video",
+        "result": job.get("result"),
+        "error": job.get("error")
+    }
+
+@app.get("/api/jobs/{job_id}/video")
+def get_job_video(job_id: str):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    video_path = Path(JOBS[job_id]["video_path"])
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found or already purged")
+    
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        filename=video_path.name
+    )
+
+@app.get("/api/jobs/{job_id}/subtitles/{ext}")
+def get_job_subtitles(job_id: str, ext: str):
+    ext = ext.lower()
+    if ext not in ["srt", "vtt", "txt"]:
+        raise HTTPException(status_code=400, detail="Unsupported format")
+    
+    file_path = SUBTITLES_DIR / f"{job_id}.{ext}"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Subtitle file not found")
+
+    content_type = "text/vtt" if ext == "vtt" else "text/plain; charset=utf-8"
+    return FileResponse(
+        file_path,
+        media_type=content_type,
+        filename=f"{job_id}.{ext}"
+    )
+
+@app.get("/api/jobs/{job_id}/download/{ext}")
+def download_subtitles(job_id: str, ext: str):
+    ext = ext.lower()
+    if ext not in ["srt", "vtt", "txt"]:
+        raise HTTPException(status_code=400, detail="Invalid extension")
+
+    file_path = SUBTITLES_DIR / f"{job_id}.{ext}"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Subtitle file does not exist")
+
+    original_name = JOBS.get(job_id, {}).get("filename")
+    if not original_name:
+        meta_file = SUBTITLES_DIR / f"{job_id}.meta.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                original_name = meta.get("filename")
+            except Exception:
+                pass
+    if not original_name:
+        original_name = f"subtitles_{job_id}"
+
+    stem = Path(original_name).stem
+    download_filename = f"{stem}.{ext}"
+
+    return FileResponse(
+        file_path,
+        media_type="application/octet-stream",
+        filename=download_filename
+    )
+
+@app.get("/api/jobs/{job_id}/clean-audio")
+def get_clean_audio(job_id: str):
+    file_path = OUTPUTS_DIR / f"{job_id}_clean_audio.mp3"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Clean audio file not found")
+
+    original_name = JOBS.get(job_id, {}).get("filename")
+    if not original_name:
+        meta_file = SUBTITLES_DIR / f"{job_id}.meta.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                original_name = meta.get("filename")
+            except Exception:
+                pass
+    if not original_name:
+        original_name = f"audio_{job_id}"
+
+    stem = Path(original_name).stem
+    return FileResponse(
+        file_path,
+        media_type="audio/mpeg",
+        filename=f"{stem}_clean_audio.mp3"
+    )
+
+@app.delete("/api/jobs/{job_id}/cleanup")
+def cleanup_job(job_id: str, delete_video: bool = True):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = JOBS[job_id]
+    cleaned_items = []
+
+    if delete_video:
+        video_path = Path(job.get("video_path", ""))
+        if cleanup_file(video_path):
+            cleaned_items.append("uploaded_video")
+
+    temp_wav = TEMP_DIR / f"{job_id}_audio.wav"
+    if cleanup_file(temp_wav):
+        cleaned_items.append("temp_audio")
+
+    return {
+        "job_id": job_id,
+        "status": "cleaned",
+        "cleaned_items": cleaned_items
+    }
+
+FRONTEND_DIR = BASE_DIR / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

@@ -1,0 +1,96 @@
+# ==========================================
+# Video Subtitle Studio - Git Ignore Rules
+# ==========================================
+
+# Python Virtual Environments & Packages
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+*.dylib
+*.dll
+
+# Rust & Cargo Build Artifacts
+**/target/
+rust-gateway/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# User Runtime Data & External Downloads
+# Preserve folder hierarchy with .gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/outputs/*
+!data/outputs/.gitkeep
+data/subtitles/*
+!data/subtitles/.gitkeep
+data/temp/*
+!data/temp/.gitkeep
+data/models/*
+!data/models/.gitkeep
+
+# External Media Files (User uploads & outputs)
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.flv
+*.wmv
+*.webm
+*.wav
+*.mp3
+*.aac
+*.m4a
+*.flac
+*.ogg
+
+# Downloaded ML Model Weights & Checkpoints
+*.bin
+*.onnx
+*.pt
+*.pth
+*.gguf
+*.safetensors
+*.ckpt
+
+# Environment & Credentials
+.env
+.env.*
+!.env.example
+tunnel_token.txt
+*.pem
+*.key
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Testing & Logs
+.pytest_cache/
+.coverage
+htmlcov/
+*.log

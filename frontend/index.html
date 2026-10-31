@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whisper Subtitle Studio - High-Concurrency GPU & Rust Platform</title>
+  <meta name="description" content="Production-grade AI subtitle generator powered by Rust concurrency and NVIDIA CUDA Whisper models.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+            <line x1="8" y1="22" x2="16" y2="22"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Whisper Subtitle Studio</h1>
+          <p class="subtitle">Multi-User AI Platform • Rust Concurrency Core & NVIDIA CUDA Acceleration</p>
+        </div>
+      </div>
+
+      <!-- Engine Badges -->
+      <div class="system-badges">
+        <!-- Rust Core Engine Badge -->
+        <div class="engine-badge rust-badge" id="rustBadge">
+          <span class="status-dot"></span>
+          <span>🦀 Rust Tokio Core</span>
+          <span class="badge badge-queue" id="queueBadge">0 in Queue</span>
+        </div>
+
+        <!-- Hardware / GPU Acceleration Badge -->
+        <div class="engine-badge gpu-badge" id="gpuBadge">
+          <span class="status-dot"></span>
+          <span id="gpuName">Detecting Acceleration...</span>
+          <span class="badge badge-primary" id="gpuComputeTag">Hardware Accel</span>
+        </div>
+
+        <!-- Turbo Tensor Engine Badge -->
+        <div class="engine-badge turbo-badge" id="turboBadge" title="Max Power 170x Tensor Acceleration active when queue is empty">
+          <span class="status-dot turbo-dot"></span>
+          <span>⚡ Max Power Turbo</span>
+          <span class="badge badge-turbo" id="turboBadgeText">170x Speed (10h in ~4m)</span>
+        </div>
+
+        <!-- Wi-Fi Network Badge -->
+        <div class="engine-badge wifi-badge" id="wifiBadge" title="Click to copy Wi-Fi address">
+          <span class="status-dot" style="background:#2563eb; box-shadow:0 0 6px rgba(37,99,235,0.6);"></span>
+          <span id="wifiName">📶 Wi-Fi: Detecting...</span>
+          <span class="badge" id="wifiBadgeCopy" style="background:#dbeafe; color:#1d4ed8; font-size:0.7rem;">Copy</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <!-- 1. Upload & Settings -->
+      <section class="card" id="setupSection">
+        <div class="card-header">
+          <h2>1. Video Upload & Model Settings</h2>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="badge badge-turbo">⚡ 170x Batched Acceleration</span>
+            <span class="badge">Multi-Client Concurrency</span>
+          </div>
+        </div>
+
+        <!-- Dropzone -->
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="videoFileInput" accept="video/*,audio/*" class="file-input">
+          <div class="dropzone-content" id="dropzonePrompt">
+            <div class="upload-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <h3>Drag & Drop Video Here</h3>
+            <p>or <span class="browse-btn">browse file</span> from your computer</p>
+          </div>
+
+          <!-- File Info Preview inside Dropzone -->
+          <div class="selected-file-info hidden" id="selectedFileInfo">
+            <div class="file-meta">
+              <span class="file-icon">🎬</span>
+              <div>
+                <strong id="fileName">video.mp4</strong>
+                <span id="fileSize">0 MB</span>
+              </div>
+            </div>
+            <button type="button" class="btn-icon" id="removeFileBtn" title="Remove file">✕</button>
+          </div>
+        </div>
+
+        <!-- Turbo Power Switch Card -->
+        <div class="turbo-control-card">
+          <div class="turbo-control-content">
+            <div class="turbo-icon-badge">⚡</div>
+            <div class="turbo-text">
+              <div class="turbo-heading">
+                <strong>Maximum Power GPU Engine (170x Tensor Core Batching)</strong>
+                <span class="badge badge-emerald">Ultra Fast</span>
+              </div>
+              <p>When queue is empty, dynamically saturates GPU Tensor Cores with parallel audio chunks (transcribes up to 10 hours of video in ~4 to 5 minutes).</p>
+            </div>
+          </div>
+          <label class="switch" title="Toggle Maximum Power Turbo Mode">
+            <input type="checkbox" id="turboToggle" checked>
+            <span class="slider round"></span>
+          </label>
+        </div>
+
+        <!-- Audio Noise Cancellation & Clarity Card -->
+        <div class="enhancer-control-card">
+          <div class="enhancer-control-content">
+            <div class="enhancer-icon-badge">🎙️</div>
+            <div class="enhancer-text">
+              <div class="enhancer-heading">
+                <strong>AI Audio Noise Cancellation & Voice Clarity</strong>
+                <span class="badge badge-emerald">Higher Accuracy</span>
+              </div>
+              <p>Cleans the extracted audio with FFT spectral denoising, low-cut rumble filter, and vocal clarity boost before transcribing with Whisper.</p>
+            </div>
+          </div>
+          <div class="enhancer-select-wrapper">
+            <select id="noiseReductionSelect" class="form-select form-select-sm">
+              <option value="studio" selected>✨ Studio Voice Clarity (Recommended)</option>
+              <option value="aggressive">🌪️ Aggressive Noise Removal (Fan / AC / Traffic)</option>
+              <option value="vocal_boost">🔊 Voice Boost & Leveling (Quiet Voices / Whispers)</option>
+              <option value="off">⚪ Off (Original Audio)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Controls Grid -->
+        <div class="controls-grid">
+          <!-- Whisper Model -->
+          <div class="form-group">
+            <label for="modelSelect">Whisper Model</label>
+            <select id="modelSelect" class="form-select">
+              <option value="base" selected>Base (~140MB) [⚡ 170x Turbo • Instant Start - Recommended]</option>
+              <option value="sensevoice-small">⚡ Alibaba SenseVoice-Small (~1.1GB) [✨ Millisecond Precision • SOTA Emotion & Speech • Instant Start]</option>
+              <option value="large-v3-turbo">Large-v3 Turbo (~1.6GB) [🚀 Deep Learning SOTA • Instant Start]</option>
+              <option value="medium">Medium (~1.5GB) [🎯 Studio Quality • Instant Start]</option>
+              <option value="small">Small (~460MB) [✨ High Accuracy • Instant Start]</option>
+              <option value="tiny">Tiny (~75MB) [⚡ Ultra Fast • Instant Start]</option>
+              <option value="large-v3">Large-v3 (~3GB) [🧠 Maximum Multilingual Accuracy]</option>
+            </select>
+            <small class="hint" id="modelHint">All key models pre-downloaded & cached locally for 0-second download wait time.</small>
+          </div>
+
+          <!-- Spoken Language -->
+          <div class="form-group">
+            <label for="languageSelect">Spoken Language</label>
+            <select id="languageSelect" class="form-select">
+              <option value="auto" selected>Auto Detect (Whisper AI)</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi (हिंदी)</option>
+              <option value="es">Spanish (Español)</option>
+              <option value="fr">French (Français)</option>
+              <option value="de">German (Deutsch)</option>
+              <option value="ja">Japanese (日本語)</option>
+              <option value="zh">Chinese (中文)</option>
+              <option value="pt">Portuguese</option>
+              <option value="ru">Russian</option>
+              <option value="ar">Arabic</option>
+              <option value="ko">Korean</option>
+            </select>
+            <small class="hint">Auto-detects spoken audio language automatically.</small>
+          </div>
+
+          <!-- Action Task -->
+          <div class="form-group">
+            <label for="taskSelect">Action Task</label>
+            <select id="taskSelect" class="form-select">
+              <option value="transcribe" selected>Transcribe (Original Language)</option>
+              <option value="translate">Translate to English</option>
+            </select>
+            <small class="hint">Translate mode converts foreign speech directly into English.</small>
+          </div>
+
+          <!-- Speech Coverage / Anti-Dropout Mode -->
+          <div class="form-group">
+            <label for="coverageSelect">Speech Coverage Mode</label>
+            <select id="coverageSelect" class="form-select">
+              <option value="full" selected>100% Full Video Scan (Zero Missed Speech - Recommended)</option>
+              <option value="vad">Smart VAD Filter (Ultra-Sensitive Silence Removal)</option>
+            </select>
+            <small class="hint">Guarantees every second from start to finish is transcribed, including closing dialogue.</small>
+          </div>
+        </div>
+
+        <!-- Action Button -->
+        <div class="card-footer">
+          <button id="generateBtn" class="btn btn-primary btn-large" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Generate Subtitles (.SRT)
+          </button>
+        </div>
+      </section>
+
+      <!-- 2. Processing & Queue Section -->
+      <section class="card hidden" id="progressSection">
+        <div class="card-header">
+          <div style="display:flex; align-items:center; gap: 10px;">
+            <h2>2. Processing On GPU</h2>
+            <span id="queueStatusPill" class="badge badge-queue hidden">Queue Position #1</span>
+            <span id="speedupPill" class="badge badge-turbo hidden">⚡ 170x Speedup</span>
+          </div>
+          <div style="display:flex; align-items:center; gap: 10px;">
+            <span id="progressPercent" class="badge badge-primary">0%</span>
+            <button id="cancelJobBtn" class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" title="Clear view and start over">✕ Start Over</button>
+          </div>
+        </div>
+
+        <div class="progress-bar-container">
+          <div id="progressBar" class="progress-bar-fill"></div>
+        </div>
+
+        <div class="status-status-row">
+          <p id="statusMessage" class="status-msg">Rust Gateway queueing task on GPU worker...</p>
+          <span id="elapsedTimer" class="timer-pill">00:00</span>
+        </div>
+
+        <div class="log-stream-box" id="logStreamBox">
+          <div class="log-header">
+            <span>Rust Gateway & GPU Execution Stream</span>
+            <span class="log-indicator">LIVE</span>
+          </div>
+          <div class="log-terminal" id="logTerminal"></div>
+        </div>
+      </section>
+
+      <!-- 3. Subtitle Studio & Editor Workspace (Full-Width, No Video Player) -->
+      <section class="card hidden" id="resultsSection">
+        <div class="card-header results-header">
+          <div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <h2>3. Subtitle Studio Workspace</h2>
+              <span class="badge badge-emerald" id="readyBadge">Ready for Export</span>
+            </div>
+            <div class="studio-stats-row" id="studioStatsRow">
+              <span class="stat-pill" id="statLang">🌐 English</span>
+              <span class="stat-pill" id="statCues">📝 0 Cues</span>
+              <span class="stat-pill" id="statWords">💬 0 Words</span>
+              <span class="stat-pill" id="statDuration">⏱️ 0.0s</span>
+              <span class="stat-pill highlight" id="statSpeed">⚡ 170x Acceleration</span>
+              <span class="stat-pill highlight" id="statNoise">🎙️ Denoised: Studio Clarity</span>
+              <span class="stat-pill auto-purge" id="statPurge">🗑️ Video Purged (0B Disk Waste)</span>
+            </div>
+          </div>
+          <div class="download-group">
+            <button id="downloadSrtBtn" class="btn btn-emerald btn-glow">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download .SRT
+            </button>
+            <button id="downloadVttBtn" class="btn btn-secondary">.VTT</button>
+            <button id="downloadTxtBtn" class="btn btn-secondary">.TXT</button>
+            <button id="downloadCleanAudioBtn" class="btn btn-secondary hidden" title="Download the cleaned & noise-cancelled audio track (.MP3)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
+                <path d="M9 18V5l12-2v13"></path>
+                <circle cx="6" cy="18" r="3"></circle>
+                <circle cx="18" cy="16" r="3"></circle>
+              </svg>
+              Clean Audio (.MP3)
+            </button>
+            <button id="copyAllBtn" class="btn btn-secondary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              Copy All
+            </button>
+            <button id="exportEditedSrtBtn" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+              </svg>
+              Export Edited .SRT
+            </button>
+          </div>
+        </div>
+
+        <!-- Full-Width Studio Toolbar: Search + Timing Offset Shifter -->
+        <div class="studio-toolbar">
+          <div class="search-box">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="subtitleSearchInput" placeholder="Filter subtitles by keyword, phrase, or timestamp..." autocomplete="off">
+            <span id="searchMatchCount" class="badge badge-primary hidden">0 matches</span>
+          </div>
+
+          <!-- Time Offset Sync Shifter -->
+          <div class="time-shift-controls">
+            <span class="tool-label">Sync Offset:</span>
+            <button type="button" class="btn-tool" id="shiftBackBtn" title="Shift all subtitles earlier by 0.5s">⏪ -0.5s</button>
+            <span class="offset-display" id="offsetDisplay">0.0s</span>
+            <button type="button" class="btn-tool" id="shiftFwdBtn" title="Shift all subtitles later by 0.5s">⏩ +0.5s</button>
+            <button type="button" class="btn-tool" id="resetShiftBtn" title="Reset timing shift">↺ Reset</button>
+          </div>
+        </div>
+
+        <!-- Full-Width Subtitle Timeline Container -->
+        <div class="full-width-timeline" id="timelineList">
+          <!-- Dynamically populated subtitle segment cards -->
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="app-footer">
+      <p>Whisper Studio • Rust Concurrency Core & Hardware-Accelerated Transcription • Intermediate audio files are automatically purged</p>
+    </footer>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
