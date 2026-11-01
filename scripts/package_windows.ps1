@@ -86,14 +86,30 @@ if ((Test-Path $LocalFFmpeg) -and (Test-Path $LocalFFprobe)) {
     }
 }
 
-# 4. Bundle Portable Python Runtime (if requested)
-Write-Host "`n[4/6] Setting up Python Runtime..." -ForegroundColor Green
+# 4. Bundle Portable Python Runtime (Embeddable Package)
+Write-Host "`n[4/6] Setting up Portable Python Runtime..." -ForegroundColor Green
 $PackagePythonDir = Join-Path $PackageDir "python"
 if (-not $SkipPythonEmbed) {
-    if (Test-Path ".\.venv\Scripts\python.exe") {
-        Write-Host "Copying active virtualenv into package runtime..." -ForegroundColor Yellow
-        Copy-Item ".\.venv" (Join-Path $PackageDir ".venv") -Recurse
-    }
+    Write-Host "Downloading Python 3.11 Embeddable Package..." -ForegroundColor Yellow
+    $PyEmbedZip = Join-Path $env:TEMP "python-embed.zip"
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile $PyEmbedZip
+    New-Item -ItemType Directory -Path $PackagePythonDir -Force | Out-Null
+    Expand-Archive -Path $PyEmbedZip -DestinationPath $PackagePythonDir -Force
+
+    $PthFile = Join-Path $PackagePythonDir "python311._pth"
+    $PthLines = Get-Content $PthFile
+    $PthLines = $PthLines -replace "#import site", "import site"
+    $PthLines += "`nLib\site-packages`n..`n."
+    Set-Content -Path $PthFile -Value $PthLines
+
+    $GetPip = Join-Path $env:TEMP "get-pip.py"
+    Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $GetPip
+    & (Join-Path $PackagePythonDir "python.exe") $GetPip --no-warn-script-location
+
+    Write-Host "Installing requirements into portable Python..." -ForegroundColor Cyan
+    & (Join-Path $PackagePythonDir "python.exe") -m pip install -r (Join-Path $ProjectRoot "requirements.txt") --no-warn-script-location
+    Remove-Item $PyEmbedZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $GetPip -Force -ErrorAction SilentlyContinue
 }
 
 # 5. Create Portable Zip
@@ -124,3 +140,4 @@ if ($Iscc) {
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 Write-Host "   PACKAGING COMPLETE! Artifacts available in 'dist/'      " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
+

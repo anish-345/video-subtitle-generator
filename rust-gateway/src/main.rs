@@ -42,10 +42,19 @@ fn which_cmd(cmd: &str) -> bool {
     matches!(check, Ok(status) if status.success())
 }
 
+fn is_working_python(py: &Path) -> bool {
+    let check = std::process::Command::new(py)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    matches!(check, Ok(status) if status.success())
+}
+
 fn find_python(base_dir: &Path) -> Option<PathBuf> {
     // 1. Embedded python in base_dir/python/python.exe
     let embedded = base_dir.join("python").join("python.exe");
-    if embedded.is_file() {
+    if embedded.is_file() && is_working_python(&embedded) {
         return Some(embedded);
     }
     // 2. Virtual environment in base_dir/.venv/Scripts/python.exe (or bin/python on Unix)
@@ -53,13 +62,16 @@ fn find_python(base_dir: &Path) -> Option<PathBuf> {
     let venv = base_dir.join(".venv").join("Scripts").join("python.exe");
     #[cfg(not(windows))]
     let venv = base_dir.join(".venv").join("bin").join("python");
-    if venv.is_file() {
+    if venv.is_file() && is_working_python(&venv) {
         return Some(venv);
     }
     // 3. System python in PATH
     for cmd in ["python", "py", "python3"] {
         if which_cmd(cmd) {
-            return Some(PathBuf::from(cmd));
+            let p = PathBuf::from(cmd);
+            if is_working_python(&p) {
+                return Some(p);
+            }
         }
     }
     None
@@ -156,9 +168,34 @@ async fn main() {
             }
 
             match cmd.spawn() {
-                Ok(child) => {
+                Ok(mut child) => {
+                    println!("✓ GPU Whisper Worker process spawned (PID {}). Waiting for port 8001...", child.id());
+                    let mut ready = false;
+                    for _ in 0..24 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if let Ok(Some(status)) = child.try_wait() {
+                            eprintln!("❌ Python worker exited prematurely with status: {status}");
+                            break;
+                        }
+                        if state
+                            .http_client
+                            .get(format!("{WORKER_URL}/api/status"))
+                            .timeout(Duration::from_millis(400))
+                            .send()
+                            .await
+                            .map(|r| r.status().is_success())
+                            .unwrap_or(false)
+                        {
+                            ready = true;
+                            break;
+                        }
+                    }
+                    if ready {
+                        println!("✓ GPU Whisper Worker is healthy and listening on port 8001.");
+                    } else {
+                        eprintln!("⚠️ Python worker did not report ready in time. Transcriptions may fail if still initializing.");
+                    }
                     worker_child = Some(child);
-                    println!("✓ GPU Whisper Worker launched successfully.");
                 }
                 Err(e) => {
                     eprintln!("⚠️ Could not auto-spawn Python worker: {e}");
@@ -384,18 +421,30 @@ async fn handle_transcribe(
         "noise_reduction": noise_reduction
     });
 
-    let res = state
+    let res = match state
         .http_client
         .post(format!("{WORKER_URL}/api/transcribe_path"))
         .json(&payload)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Worker error: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let err_json = serde_json::json!({
+                "detail": format!("GPU Worker connection failed (port 8001): {e}. Please ensure the Python worker is running.")
+            });
+            return Ok((
+                StatusCode::BAD_GATEWAY,
+                [(header::CONTENT_TYPE, "application/json")],
+                err_json.to_string().into_bytes(),
+            ));
+        }
+    };
 
     let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
     let body_bytes = res.bytes().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
-    Ok((status, [(header::CONTENT_TYPE, "application/json")], body_bytes))
+    Ok((status, [(header::CONTENT_TYPE, "application/json")], body_bytes.to_vec()))
 }
 
 async fn proxy_job_stream(
@@ -429,7 +478,17 @@ async fn proxy_job_status(
             let bytes = res.bytes().await.unwrap_or_default();
             (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("Worker error: {e}")).into_response(),
+        Err(e) => {
+            let err_json = serde_json::json!({
+                "detail": format!("GPU Worker connection error: {e}")
+            });
+            (
+                StatusCode::BAD_GATEWAY,
+                [(header::CONTENT_TYPE, "application/json")],
+                err_json.to_string().into_bytes(),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -529,7 +588,17 @@ async fn cleanup_job(
             let bytes = res.bytes().await.unwrap_or_default();
             (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("Worker error: {e}")).into_response(),
+        Err(e) => {
+            let err_json = serde_json::json!({
+                "detail": format!("GPU Worker connection error: {e}")
+            });
+            (
+                StatusCode::BAD_GATEWAY,
+                [(header::CONTENT_TYPE, "application/json")],
+                err_json.to_string().into_bytes(),
+            )
+                .into_response()
+        }
     }
 }
 

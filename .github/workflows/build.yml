@@ -77,16 +77,35 @@ jobs:
           Copy-Item $ffprobeExe.FullName package\bin\ffprobe.exe
           Write-Host "FFmpeg and FFprobe successfully bundled into package\bin"
 
-      - name: Bundle Standalone Python Runtime with Dependencies
+      - name: Bundle Standalone Python Embeddable Runtime
         shell: pwsh
         run: |
-          Write-Host "Creating standalone Python virtual environment..."
-          python -m venv package\.venv
-          & package\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
-          & package\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          Write-Host "Setting up Python 3.11 Embeddable Package..."
+          $pyZip = "$env:TEMP\python-embed.zip"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile $pyZip
+          New-Item -ItemType Directory -Path package\python -Force | Out-Null
+          Expand-Archive -Path $pyZip -DestinationPath "package\python" -Force
 
-          # Clean pycache to reduce size
-          Get-ChildItem -Path package\.venv -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          # Enable site-packages in python311._pth
+          $pthFile = "package\python\python311._pth"
+          $pthLines = Get-Content $pthFile
+          $pthLines = $pthLines -replace "#import site", "import site"
+          $pthLines += "`nLib\site-packages`n..`n."
+          Set-Content -Path $pthFile -Value $pthLines
+
+          # Install pip into embedded python
+          $getPip = "$env:TEMP\get-pip.py"
+          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip
+          & package\python\python.exe $getPip --no-warn-script-location
+
+          # Install all requirements directly into the embedded runtime
+          & package\python\python.exe -m pip install -r requirements.txt --no-warn-script-location
+
+          # Verify embedded python can import dependencies
+          & package\python\python.exe -c "import fastapi, uvicorn, faster_whisper; print('✓ Embedded Python verified successfully.')"
+
+          # Clean pycache to reduce installer size
+          Get-ChildItem -Path package\python -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Compile Inno Setup Windows Installer
         shell: pwsh
@@ -122,3 +141,4 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+

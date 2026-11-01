@@ -283,8 +283,16 @@ if (generateBtn) {
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Upload request failed");
+        let errMsg = "Upload request failed";
+        try {
+          const err = await res.json();
+          errMsg = err.detail || err.message || JSON.stringify(err);
+        } catch {
+          try {
+            errMsg = await res.text();
+          } catch {}
+        }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
