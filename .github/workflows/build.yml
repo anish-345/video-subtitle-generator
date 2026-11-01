@@ -102,7 +102,7 @@ jobs:
           & package\python\python.exe -m pip install -r requirements.txt --no-warn-script-location
 
           # Verify embedded python can import dependencies
-          & package\python\python.exe -c "import fastapi, uvicorn, faster_whisper; print('✓ Embedded Python verified successfully.')"
+          & package\python\python.exe -c "import fastapi, uvicorn, faster_whisper; print('[OK] Embedded Python verified successfully.')"
 
           # Clean pycache to reduce installer size
           Get-ChildItem -Path package\python -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
