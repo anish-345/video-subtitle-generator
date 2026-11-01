@@ -82,8 +82,10 @@ struct AppState {
     gpu_semaphore: Arc<Semaphore>,
     queue_counter: Arc<AtomicUsize>,
     http_client: reqwest::Client,
+    #[allow(dead_code)]
     base_dir: PathBuf,
     uploads_dir: PathBuf,
+    #[allow(dead_code)]
     subtitles_dir: PathBuf,
     temp_dir: PathBuf,
 }
@@ -229,6 +231,10 @@ async fn main() {
         .route("/api/jobs/:id/download/:ext", get(download_subtitles))
         .route("/api/jobs/:id/clean-audio", get(proxy_job_clean_audio))
         .route("/api/jobs/:id/cleanup", delete(cleanup_job))
+        .route("/api/jobs/:id/subtitles/update", post(proxy_update_subtitles))
+        .route("/api/cuda/status", get(proxy_cuda_status))
+        .route("/api/cuda/enable", post(proxy_cuda_enable))
+        .route("/api/batch/export-zip", post(proxy_batch_export_zip))
         .nest_service("/", ServeDir::new(frontend_dir))
         .layer(CorsLayer::permissive())
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024 * 1024))
@@ -416,7 +422,7 @@ async fn handle_transcribe(
         "task": task,
         "turbo_mode": turbo_mode,
         "batch_size": effective_batch_size,
-        "delete_video_after": true,
+        "delete_video_after": false,
         "vad_filter": vad_filter,
         "noise_reduction": noise_reduction
     });
@@ -489,6 +495,85 @@ async fn proxy_job_status(
             )
                 .into_response()
         }
+    }
+}
+
+async fn proxy_cuda_status(State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!("{WORKER_URL}/api/cuda/status");
+    match state.http_client.get(&url).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
+            let bytes = res.bytes().await.unwrap_or_default();
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "detail": format!("{e}") }).to_string().into_bytes(),
+        ).into_response(),
+    }
+}
+
+async fn proxy_cuda_enable(State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!("{WORKER_URL}/api/cuda/enable");
+    match state.http_client.post(&url).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
+            let bytes = res.bytes().await.unwrap_or_default();
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "detail": format!("{e}") }).to_string().into_bytes(),
+        ).into_response(),
+    }
+}
+
+async fn proxy_update_subtitles(
+    AxumPath(job_id): AxumPath<String>,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let url = format!("{WORKER_URL}/api/jobs/{job_id}/subtitles/update");
+    match state.http_client.post(&url).header("content-type", "application/json").body(body).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
+            let bytes = res.bytes().await.unwrap_or_default();
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "detail": format!("{e}") }).to_string().into_bytes(),
+        ).into_response(),
+    }
+}
+
+async fn proxy_batch_export_zip(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let url = format!("{WORKER_URL}/api/batch/export-zip");
+    match state.http_client.post(&url).header("content-type", "application/json").body(body).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
+            let cd = if let Some(h) = res.headers().get(header::CONTENT_DISPOSITION) {
+                h.clone()
+            } else {
+                HeaderValue::from_static("attachment; filename=\"whisper_batch_subtitles.zip\"")
+            };
+            let bytes = res.bytes().await.unwrap_or_default();
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/zip"));
+            headers.insert(header::CONTENT_DISPOSITION, cd);
+            (status, headers, bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "detail": format!("{e}") }).to_string().into_bytes(),
+        ).into_response(),
     }
 }
 

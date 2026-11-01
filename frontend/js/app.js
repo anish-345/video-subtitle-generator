@@ -1,33 +1,53 @@
-// Whisper Subtitle Studio - Modern Full-Width Studio Controller
+// Whisper Subtitle Studio - Advanced Batch Queue & Interactive Studio Controller
 
-let currentFile = null;
+// Global App State
+let batchQueue = []; // Array of { id, file, status, progress, jobId, result, error }
+let activeBatchIndex = -1;
+let isProcessingBatch = false;
+
 let currentJobId = null;
 let currentJobData = null;
+let currentFile = null;
 let eventSource = null;
 let timerInterval = null;
 let timerStart = null;
 let parsedSegments = [];
 let originalSegments = [];
 let totalSyncOffset = 0.0;
+let overlayEnabled = true;
 
-// Header & System Engine Badges
+// DOM Elements - Engine Badges
 const rustBadge = document.getElementById("rustBadge");
 const queueBadge = document.getElementById("queueBadge");
 const gpuNameEl = document.getElementById("gpuName");
+const gpuComputeTag = document.getElementById("gpuComputeTag");
 const turboBadge = document.getElementById("turboBadge");
 const turboBadgeText = document.getElementById("turboBadgeText");
 const turboToggle = document.getElementById("turboToggle");
 const queueStatusPill = document.getElementById("queueStatusPill");
 const speedupPill = document.getElementById("speedupPill");
+const batchProgressPill = document.getElementById("batchProgressPill");
+
+// CUDA 1-Click Notice Banner
+const cudaNoticeBanner = document.getElementById("cudaNoticeBanner");
+const cudaNoticeTitle = document.getElementById("cudaNoticeTitle");
+const cudaNoticeText = document.getElementById("cudaNoticeText");
+const installCudaBtn = document.getElementById("installCudaBtn");
+const installCudaBtnText = document.getElementById("installCudaBtnText");
 
 // Upload & Setup Form
 const dropzone = document.getElementById("dropzone");
 const videoFileInput = document.getElementById("videoFileInput");
 const dropzonePrompt = document.getElementById("dropzonePrompt");
-const selectedFileInfo = document.getElementById("selectedFileInfo");
-const fileNameEl = document.getElementById("fileName");
-const fileSizeEl = document.getElementById("fileSize");
-const removeFileBtn = document.getElementById("removeFileBtn");
+
+const batchQueueContainer = document.getElementById("batchQueueContainer");
+const batchCountBadge = document.getElementById("batchCountBadge");
+const batchSizeHint = document.getElementById("batchSizeHint");
+const batchFileList = document.getElementById("batchFileList");
+const clearBatchBtn = document.getElementById("clearBatchBtn");
+const addMoreFilesBtn = document.getElementById("addMoreFilesBtn");
+const downloadBatchZipBtn = document.getElementById("downloadBatchZipBtn");
+const batchStatusSummary = document.getElementById("batchStatusSummary");
 
 const modelSelect = document.getElementById("modelSelect");
 const languageSelect = document.getElementById("languageSelect");
@@ -35,6 +55,7 @@ const taskSelect = document.getElementById("taskSelect");
 const coverageSelect = document.getElementById("coverageSelect");
 const noiseReductionSelect = document.getElementById("noiseReductionSelect");
 const generateBtn = document.getElementById("generateBtn");
+const generateBtnText = document.getElementById("generateBtnText");
 
 // Progress & Live Stream
 const setupSection = document.getElementById("setupSection");
@@ -43,37 +64,49 @@ const progressBar = document.getElementById("progressBar");
 const progressPercent = document.getElementById("progressPercent");
 const statusMessage = document.getElementById("statusMessage");
 const elapsedTimer = document.getElementById("elapsedTimer");
+const accurateProgressPill = document.getElementById("accurateProgressPill");
+const etaTimerPill = document.getElementById("etaTimerPill");
 const logTerminal = document.getElementById("logTerminal");
+const cancelJobBtn = document.getElementById("cancelJobBtn");
 
-// Subtitle Studio Workspace
+// Subtitle Studio & Video Player Elements
 const resultsSection = document.getElementById("resultsSection");
 const statLang = document.getElementById("statLang");
 const statCues = document.getElementById("statCues");
 const statWords = document.getElementById("statWords");
 const statDuration = document.getElementById("statDuration");
 const statSpeed = document.getElementById("statSpeed");
-const statPurge = document.getElementById("statPurge");
+const statNoise = document.getElementById("statNoise");
 
-// Download & Export Buttons
 const downloadSrtBtn = document.getElementById("downloadSrtBtn");
 const downloadVttBtn = document.getElementById("downloadVttBtn");
 const downloadTxtBtn = document.getElementById("downloadTxtBtn");
 const downloadCleanAudioBtn = document.getElementById("downloadCleanAudioBtn");
-const statNoise = document.getElementById("statNoise");
-const copyAllBtn = document.getElementById("copyAllBtn");
-const exportEditedSrtBtn = document.getElementById("exportEditedSrtBtn");
+const saveEditsBtn = document.getElementById("saveEditsBtn");
 
-// Studio Search & Sync Offset Controls
+const studioVideoPlayer = document.getElementById("studioVideoPlayer");
+const videoSubtitleOverlay = document.getElementById("videoSubtitleOverlay");
+const overlaySubtitleText = document.getElementById("overlaySubtitleText");
+const videoSkipBackBtn = document.getElementById("videoSkipBackBtn");
+const videoPlayPauseBtn = document.getElementById("videoPlayPauseBtn");
+const videoSkipFwdBtn = document.getElementById("videoSkipFwdBtn");
+const videoSpeedSelect = document.getElementById("videoSpeedSelect");
+const toggleSubtitleOverlayBtn = document.getElementById("toggleSubtitleOverlayBtn");
+
 const subtitleSearchInput = document.getElementById("subtitleSearchInput");
 const searchMatchCount = document.getElementById("searchMatchCount");
 const shiftBackBtn = document.getElementById("shiftBackBtn");
 const shiftFwdBtn = document.getElementById("shiftFwdBtn");
 const offsetDisplay = document.getElementById("offsetDisplay");
 const resetShiftBtn = document.getElementById("resetShiftBtn");
-const timelineList = document.getElementById("timelineList");
+const addCueBtn = document.getElementById("addCueBtn");
+const copyAllBtn = document.getElementById("copyAllBtn");
+const saveStatusBadge = document.getElementById("saveStatusBadge");
+const subtitleTableBody = document.getElementById("subtitleTableBody");
+const editorTableContainer = document.getElementById("editorTableContainer");
 
 // =========================================================================
-// 1. Initialize & Poll Engine Status
+// 1. Initial Status Check & CUDA Check
 // =========================================================================
 async function initSystemStatus() {
   try {
@@ -81,16 +114,7 @@ async function initSystemStatus() {
     if (!res.ok) throw new Error("Failed to query status");
     const data = await res.json();
 
-    // Optional auto-redirect if requested via ?wifi=1 query param
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get("wifi") === "1" && data.wifi_ip && data.wifi_ip !== "127.0.0.1" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-      const targetPort = window.location.port ? `:${window.location.port}` : ":8000";
-      const targetUrl = `${window.location.protocol}//${data.wifi_ip}${targetPort}${window.location.pathname}${window.location.search}${window.location.hash}`;
-      window.location.replace(targetUrl);
-      return;
-    }
-
-    // Update Wi-Fi Badge
+    // Wi-Fi Network Badge
     const wifiBadge = document.getElementById("wifiBadge");
     const wifiName = document.getElementById("wifiName");
     const wifiBadgeCopy = document.getElementById("wifiBadgeCopy");
@@ -119,23 +143,21 @@ async function initSystemStatus() {
       const q = data.rust_core.queued_jobs || 0;
       if (queueBadge) queueBadge.textContent = `${q} in Queue`;
       if (turboBadgeText) {
-        if (data.rust_core.turbo_ready) {
-          turboBadgeText.textContent = "170x Speed (10h in ~4m)";
-        } else {
-          turboBadgeText.textContent = "Queue Balanced";
-        }
+        turboBadgeText.textContent = data.rust_core.turbo_ready ? "170x Speed (10h in ~4m)" : "Queue Balanced";
       }
     }
 
     // GPU Metrics
-    const gpuComputeTag = document.getElementById("gpuComputeTag");
     if (data.gpu && data.gpu.cuda_available) {
       if (gpuNameEl) gpuNameEl.textContent = `${data.gpu.device_name} (${data.gpu.vram_gb} GB)`;
       if (gpuComputeTag) gpuComputeTag.textContent = data.gpu.recommended_compute.toUpperCase();
     } else {
-      if (gpuNameEl) gpuNameEl.textContent = "CPU Fallback Mode";
+      if (gpuNameEl) gpuNameEl.textContent = data.gpu && data.gpu.has_nvidia_gpu ? `${data.gpu.device_name} (CPU mode)` : "CPU Fallback Mode";
       if (gpuComputeTag) gpuComputeTag.textContent = "CPU";
     }
+
+    // Check CUDA status for 1-click banner
+    checkCudaStatus();
 
     // Update models if provided by backend
     if (data.available_models && Array.isArray(data.available_models) && modelSelect) {
@@ -144,6 +166,50 @@ async function initSystemStatus() {
   } catch (err) {
     console.warn("Status check notice:", err);
   }
+}
+
+async function checkCudaStatus() {
+  try {
+    const res = await fetch("/api/cuda/status");
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.has_nvidia_gpu && data.cuda_setup_needed && !data.cuda_available) {
+      if (cudaNoticeBanner) {
+        cudaNoticeBanner.classList.remove("hidden");
+        if (cudaNoticeTitle) cudaNoticeTitle.textContent = `⚡ ${data.device_name} Detected!`;
+        if (cudaNoticeText) cudaNoticeText.textContent = "An NVIDIA GPU is present, but cuDNN acceleration libraries are missing. Click to enable 1-Click CUDA Acceleration (20x-50x speedup).";
+      }
+    } else {
+      if (cudaNoticeBanner) cudaNoticeBanner.classList.add("hidden");
+    }
+  } catch (e) {
+    console.warn("CUDA check error:", e);
+  }
+}
+
+// 1-Click CUDA Enable Handler
+if (installCudaBtn) {
+  installCudaBtn.addEventListener("click", async () => {
+    installCudaBtn.disabled = true;
+    if (installCudaBtnText) installCudaBtnText.textContent = "⏳ Installing CUDA & cuDNN (please wait ~30-60s)...";
+    try {
+      const res = await fetch("/api/cuda/enable", { method: "POST" });
+      const data = await res.json();
+      if (data.status === "installed" || data.cuda_available) {
+        alert(data.message || "CUDA Acceleration Enabled successfully!");
+        if (cudaNoticeBanner) cudaNoticeBanner.classList.add("hidden");
+        initSystemStatus();
+      } else {
+        alert(data.message || "Installation finished. Please restart the app to activate CUDA.");
+      }
+    } catch (err) {
+      alert("CUDA setup notice: " + err.message);
+    } finally {
+      installCudaBtn.disabled = false;
+      if (installCudaBtnText) installCudaBtnText.textContent = "⚡ Enable 1-Click CUDA Acceleration";
+    }
+  });
 }
 
 function updateModelOptions(models) {
@@ -169,7 +235,7 @@ function updateModelOptions(models) {
 }
 
 // =========================================================================
-// 2. Drag & Drop File Setup
+// 2. Drag & Drop & Multi-File Batch Queue Setup
 // =========================================================================
 function setupDropzone() {
   if (!dropzone) return;
@@ -191,49 +257,197 @@ function setupDropzone() {
   });
 
   dropzone.addEventListener("drop", (e) => {
-    const files = e.dataTransfer.files;
+    const files = Array.from(e.dataTransfer.files || []);
     if (files.length > 0) {
-      handleFileSelected(files[0]);
+      addFilesToQueue(files);
     }
   });
 
   if (videoFileInput) {
     videoFileInput.addEventListener("change", (e) => {
-      if (e.target.files.length > 0) {
-        handleFileSelected(e.target.files[0]);
+      const files = Array.from(e.target.files || []);
+      if (files.length > 0) {
+        addFilesToQueue(files);
       }
     });
   }
 
-  if (removeFileBtn) {
-    removeFileBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      resetFileSelection();
+  if (addMoreFilesBtn) {
+    addMoreFilesBtn.addEventListener("click", () => {
+      if (videoFileInput) videoFileInput.click();
     });
   }
+
+  if (clearBatchBtn) {
+    clearBatchBtn.addEventListener("click", () => {
+      if (isProcessingBatch && !confirm("A batch queue is in progress. Are you sure you want to clear?")) return;
+      resetBatchQueue();
+    });
+  }
+
+  if (downloadBatchZipBtn) {
+    downloadBatchZipBtn.addEventListener("click", downloadBatchZip);
+  }
 }
 
-function handleFileSelected(file) {
-  if (file.size > 25 * 1024 * 1024 * 1024) {
-    alert("File exceeds the 25 GB maximum supported size.");
+function addFilesToQueue(newFiles) {
+  let addedCount = 0;
+  newFiles.forEach(file => {
+    if (file.size > 25 * 1024 * 1024 * 1024) {
+      alert(`File "${file.name}" exceeds the 25 GB maximum limit.`);
+      return;
+    }
+    // Avoid duplicate files by name and size
+    const exists = batchQueue.some(item => item.file.name === file.name && item.file.size === file.size);
+    if (!exists) {
+      batchQueue.push({
+        id: "q_" + Math.random().toString(36).substring(2, 9),
+        file: file,
+        status: "queued",
+        progress: 0,
+        jobId: null,
+        result: null,
+        error: null
+      });
+      addedCount++;
+    }
+  });
+
+  if (addedCount > 0) {
+    currentFile = batchQueue[0].file;
+    renderBatchQueueUI();
+  }
+}
+
+function removeFileFromQueue(index) {
+  if (isProcessingBatch && activeBatchIndex === index) {
+    alert("Cannot remove a file currently being processed.");
     return;
   }
-  currentFile = file;
-  if (fileNameEl) fileNameEl.textContent = file.name;
-  if (fileSizeEl) fileSizeEl.textContent = formatBytes(file.size);
-
-  if (dropzonePrompt) dropzonePrompt.classList.add("hidden");
-  if (selectedFileInfo) selectedFileInfo.classList.remove("hidden");
-  if (generateBtn) generateBtn.disabled = false;
+  batchQueue.splice(index, 1);
+  if (batchQueue.length === 0) {
+    resetBatchQueue();
+  } else {
+    currentFile = batchQueue[0].file;
+    renderBatchQueueUI();
+  }
 }
 
-function resetFileSelection() {
+function resetBatchQueue() {
+  batchQueue = [];
+  activeBatchIndex = -1;
+  isProcessingBatch = false;
   currentFile = null;
   if (videoFileInput) videoFileInput.value = "";
-  if (dropzonePrompt) dropzonePrompt.classList.remove("hidden");
-  if (selectedFileInfo) selectedFileInfo.classList.add("hidden");
-  if (generateBtn) generateBtn.disabled = true;
+  if (batchQueueContainer) batchQueueContainer.classList.add("hidden");
+  if (generateBtn) {
+    generateBtn.disabled = true;
+    if (generateBtnText) generateBtnText.textContent = "Generate Subtitles (.SRT)";
+  }
 }
+
+function renderBatchQueueUI() {
+  if (!batchQueueContainer || !batchFileList) return;
+
+  if (batchQueue.length === 0) {
+    batchQueueContainer.classList.add("hidden");
+    if (generateBtn) generateBtn.disabled = true;
+    return;
+  }
+
+  batchQueueContainer.classList.remove("hidden");
+
+  let totalBytes = 0;
+  let completedCount = 0;
+
+  batchFileList.innerHTML = "";
+  batchQueue.forEach((item, idx) => {
+    totalBytes += item.file.size;
+    if (item.status === "completed") completedCount++;
+
+    const card = document.createElement("div");
+    card.className = `batch-file-card ${item.status}`;
+    card.id = `item-${item.id}`;
+
+    let statusPillHtml = '<span class="badge">Queued</span>';
+    if (item.status === "processing") {
+      statusPillHtml = `<span class="badge badge-turbo">⚡ Transcribing (${item.progress}%)</span>`;
+    } else if (item.status === "completed") {
+      statusPillHtml = '<span class="badge badge-emerald">✓ Completed</span>';
+    } else if (item.status === "failed") {
+      statusPillHtml = '<span class="badge" style="background:#fee2e2; color:#b91c1c;">✕ Error</span>';
+    }
+
+    let actionBtnHtml = `
+      <button type="button" class="btn-icon-sm delete" title="Remove from queue" onclick="removeFileFromQueue(${idx})">✕</button>
+    `;
+    if (item.status === "completed" && item.result) {
+      actionBtnHtml = `
+        <button type="button" class="btn btn-secondary btn-sm" onclick="loadCompletedJobToStudio(${idx})">Open in Studio</button>
+        ${actionBtnHtml}
+      `;
+    }
+
+    card.innerHTML = `
+      <div class="batch-file-left">
+        <span class="batch-file-icon">🎬</span>
+        <div>
+          <div class="batch-file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div>
+          <div class="batch-file-size">${formatBytes(item.file.size)}</div>
+        </div>
+      </div>
+      <div class="batch-file-right">
+        ${statusPillHtml}
+        ${actionBtnHtml}
+      </div>
+    `;
+    batchFileList.appendChild(card);
+  });
+
+  if (batchCountBadge) batchCountBadge.textContent = `${batchQueue.length} file${batchQueue.length > 1 ? "s" : ""}`;
+  if (batchSizeHint) batchSizeHint.textContent = `Total: ${formatBytes(totalBytes)}`;
+
+  if (generateBtn) {
+    generateBtn.disabled = isProcessingBatch;
+    if (generateBtnText) {
+      if (batchQueue.length > 1) {
+        generateBtnText.textContent = `⚡ Process Batch (${batchQueue.length} Videos)`;
+      } else {
+        generateBtnText.textContent = "Generate Subtitles (.SRT)";
+      }
+    }
+  }
+
+  // Show Download All Zip button if any files are completed
+  if (downloadBatchZipBtn) {
+    if (completedCount > 1) {
+      downloadBatchZipBtn.classList.remove("hidden");
+      downloadBatchZipBtn.textContent = `📦 Download All Subtitles (${completedCount} .ZIP)`;
+    } else {
+      downloadBatchZipBtn.classList.add("hidden");
+    }
+  }
+
+  if (batchStatusSummary) {
+    if (isProcessingBatch) {
+      batchStatusSummary.textContent = `Processing video ${activeBatchIndex + 1} of ${batchQueue.length}...`;
+    } else if (completedCount === batchQueue.length && batchQueue.length > 0) {
+      batchStatusSummary.textContent = `✓ All ${batchQueue.length} files transcribed successfully!`;
+    } else {
+      batchStatusSummary.textContent = "Sequential batch queue ready";
+    }
+  }
+}
+
+window.removeFileFromQueue = removeFileFromQueue;
+window.loadCompletedJobToStudio = (index) => {
+  const item = batchQueue[index];
+  if (item && item.result) {
+    currentFile = item.file;
+    currentJobId = item.jobId;
+    finishJob(item.result);
+  }
+};
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return "0 Bytes";
@@ -244,169 +458,199 @@ function formatBytes(bytes) {
 }
 
 // =========================================================================
-// 3. Trigger Subtitle Generation
+// 3. Batch Queue Sequential Executor
 // =========================================================================
 if (generateBtn) {
   generateBtn.addEventListener("click", async () => {
-    if (!currentFile) return;
+    if (batchQueue.length === 0 || isProcessingBatch) return;
 
+    isProcessingBatch = true;
     generateBtn.disabled = true;
-    if (progressSection) progressSection.classList.remove("hidden");
-    if (resultsSection) resultsSection.classList.add("hidden");
-    if (queueStatusPill) queueStatusPill.classList.add("hidden");
-    if (speedupPill) speedupPill.classList.add("hidden");
-    if (logTerminal) logTerminal.innerHTML = "";
-    if (progressBar) progressBar.style.width = "5%";
-    if (progressPercent) progressPercent.textContent = "5%";
-    if (statusMessage) statusMessage.textContent = "Uploading video to Rust Concurrency Core...";
 
-    startTimer();
-    const isTurbo = turboToggle ? turboToggle.checked : true;
-    const useVad = coverageSelect ? coverageSelect.value === "vad" : false;
-    const noiseVal = noiseReductionSelect ? noiseReductionSelect.value : "studio";
-    addLog(`[Rust Core] Submitting "${currentFile.name}" (${formatBytes(currentFile.size)})...`);
-    addLog(`[Config] Model: ${modelSelect.value} | Language: ${languageSelect.value} | Noise Cancellation: ${noiseVal} | Coverage: ${useVad ? 'Smart VAD' : '100% Full Video Scan (Anti-Dropout)'} | Turbo: ${isTurbo ? '170x' : 'Balanced'}`);
+    // Process from the first non-completed item
+    for (let i = 0; i < batchQueue.length; i++) {
+      if (batchQueue[i].status === "completed") continue;
 
-    const formData = new FormData();
-    formData.append("file", currentFile);
-    formData.append("model_size", modelSelect.value);
-    formData.append("language", languageSelect.value);
-    formData.append("task", taskSelect.value);
-    formData.append("turbo_mode", isTurbo ? "true" : "false");
-    formData.append("vad_filter", useVad ? "true" : "false");
-    formData.append("noise_reduction", noiseVal);
+      activeBatchIndex = i;
+      const currentItem = batchQueue[i];
+      currentItem.status = "processing";
+      renderBatchQueueUI();
 
-    try {
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData
-      });
-
-      if (!res.ok) {
-        let errMsg = "Upload request failed";
-        try {
-          const err = await res.json();
-          errMsg = err.detail || err.message || JSON.stringify(err);
-        } catch {
-          try {
-            errMsg = await res.text();
-          } catch {}
-        }
-        throw new Error(errMsg);
+      if (batchProgressPill) {
+        batchProgressPill.textContent = `Video ${i + 1} of ${batchQueue.length}`;
+        batchProgressPill.classList.remove("hidden");
       }
 
-      const data = await res.json();
-      currentJobId = data.job_id;
-
-      // Handle instant cache hit (already completed)
-      if (data.status === "completed" && data.result) {
-        stopTimer();
-        localStorage.removeItem("whisper_active_job");
-        addLog(`[Instant Hit] Subtitles for "${data.filename || currentFile.name}" were already generated! Loaded immediately.`, "success");
-        finishJob(data.result);
-        return;
-      }
-
-      // Handle deduplication re-attachment
-      if (data.deduplicated) {
-        addLog(`[Deduplication] Task #${currentJobId} is already in progress for "${data.filename}". Reconnecting without duplicating...`, "info");
+      const success = await processSingleItem(currentItem);
+      if (success) {
+        currentItem.status = "completed";
       } else {
-        addLog(`[Rust Gateway] Job assigned: ${currentJobId}. Connecting to GPU event stream...`, "success");
+        currentItem.status = "failed";
       }
-
-      // Save active session in localStorage to survive browser refresh
-      localStorage.setItem("whisper_active_job", JSON.stringify({
-        jobId: currentJobId,
-        filename: currentFile ? currentFile.name : (data.filename || "video"),
-        timestamp: Date.now()
-      }));
-
-      connectEventSource(currentJobId);
-    } catch (err) {
-      stopTimer();
-      if (statusMessage) statusMessage.textContent = "Error: " + err.message;
-      addLog("Error: " + err.message, "error");
-      if (generateBtn) generateBtn.disabled = false;
+      renderBatchQueueUI();
     }
+
+    isProcessingBatch = false;
+    generateBtn.disabled = false;
+    renderBatchQueueUI();
   });
 }
 
-const cancelJobBtn = document.getElementById("cancelJobBtn");
-if (cancelJobBtn) {
-  cancelJobBtn.addEventListener("click", () => {
-    if (confirm("Abandon this view and start over? The server will finish in background.")) {
-      if (eventSource) eventSource.close();
-      localStorage.removeItem("whisper_active_job");
-      stopTimer();
-      if (progressSection) progressSection.classList.add("hidden");
-      if (setupSection) setupSection.classList.remove("hidden");
-      if (generateBtn) generateBtn.disabled = !currentFile;
-    }
-  });
-}
+async function processSingleItem(item) {
+  currentFile = item.file;
+  if (progressSection) progressSection.classList.remove("hidden");
+  if (queueStatusPill) queueStatusPill.classList.add("hidden");
+  if (speedupPill) speedupPill.classList.add("hidden");
+  if (logTerminal) logTerminal.innerHTML = "";
+  if (progressBar) progressBar.style.width = "2%";
+  if (progressPercent) progressPercent.textContent = "0%";
+  if (accurateProgressPill) accurateProgressPill.textContent = "00:00 / 00:00 (0%)";
+  if (etaTimerPill) etaTimerPill.textContent = "ETA: Calculating...";
+  if (statusMessage) statusMessage.textContent = `Uploading "${item.file.name}" to Rust Gateway...`;
 
-function connectEventSource(jobId) {
-  if (eventSource) {
-    eventSource.close();
+  startTimer();
+
+  const isTurbo = turboToggle ? turboToggle.checked : true;
+  const useVad = coverageSelect ? coverageSelect.value === "vad" : false;
+  const noiseVal = noiseReductionSelect ? noiseReductionSelect.value : "studio";
+
+  addLog(`[Rust Core] Submitting "${item.file.name}" (${formatBytes(item.file.size)})...`);
+  addLog(`[Config] Model: ${modelSelect.value} | Language: ${languageSelect.value} | Noise: ${noiseVal} | Turbo: ${isTurbo ? '170x' : 'Balanced'}`);
+
+  const formData = new FormData();
+  formData.append("file", item.file);
+  formData.append("model_size", modelSelect.value);
+  formData.append("language", languageSelect.value);
+  formData.append("task", taskSelect.value);
+  formData.append("turbo_mode", isTurbo ? "true" : "false");
+  formData.append("vad_filter", useVad ? "true" : "false");
+  formData.append("noise_reduction", noiseVal);
+
+  try {
+    const res = await fetch("/api/transcribe", {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) {
+      let errMsg = "Upload request failed";
+      try {
+        const err = await res.json();
+        errMsg = err.detail || err.message || JSON.stringify(err);
+      } catch {
+        errMsg = await res.text();
+      }
+      throw new Error(errMsg);
+    }
+
+    const data = await res.json();
+    currentJobId = data.job_id;
+    item.jobId = data.job_id;
+
+    if (data.status === "completed" && data.result) {
+      stopTimer();
+      item.result = data.result;
+      finishJob(data.result);
+      return true;
+    }
+
+    addLog(`[Rust Gateway] Job assigned: ${currentJobId}. Subscribed to live GPU event stream...`, "success");
+
+    // Await completion via Promise wrapped around EventSource / Polling
+    const result = await waitForJobCompletion(currentJobId, item);
+    item.result = result;
+    finishJob(result);
+    return true;
+  } catch (err) {
+    stopTimer();
+    item.error = err.message;
+    if (statusMessage) statusMessage.textContent = "Error: " + err.message;
+    addLog("Error: " + err.message, "error");
+    return false;
   }
-
-  eventSource = new EventSource(`/api/jobs/${jobId}/stream`);
-
-  eventSource.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      handleProgressUpdate(payload);
-    } catch (e) {
-      console.warn("SSE parse error", e, event.data);
-    }
-  };
-
-  eventSource.onerror = async () => {
-    eventSource.close();
-    checkJobStatusPoll(jobId);
-  };
 }
 
-async function checkJobStatusPoll(jobId, maxAttempts = 120, intervalMs = 3000) {
+function waitForJobCompletion(jobId, item) {
+  return new Promise((resolve, reject) => {
+    let sse = new EventSource(`/api/jobs/${jobId}/stream`);
+
+    sse.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleProgressUpdate(payload, item);
+
+        if (payload.step === "completed") {
+          sse.close();
+          stopTimer();
+          fetch(`/api/jobs/${jobId}/status`)
+            .then(r => r.json())
+            .then(d => resolve(d.result))
+            .catch(reject);
+        } else if (payload.step === "error") {
+          sse.close();
+          stopTimer();
+          reject(new Error(payload.message || "Transcription failed"));
+        }
+      } catch (e) {
+        console.warn("SSE parse error", e);
+      }
+    };
+
+    sse.onerror = async () => {
+      sse.close();
+      // Poll fallback
+      const result = await pollJobStatusUntilDone(jobId, item);
+      if (result) resolve(result);
+      else reject(new Error("Polling timed out or job failed"));
+    };
+  });
+}
+
+async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs = 2500) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, intervalMs));
     try {
       const res = await fetch(`/api/jobs/${jobId}/status`);
       if (!res.ok) continue;
       const data = await res.json();
-      if (data.status === "completed") {
+
+      if (data.status === "completed" && data.result) {
         stopTimer();
-        localStorage.removeItem("whisper_active_job");
-        finishJob(data.result);
-        return;
+        return data.result;
       } else if (data.status === "failed") {
         stopTimer();
-        localStorage.removeItem("whisper_active_job");
-        if (statusMessage) statusMessage.textContent = "Failed: " + (data.error || "Unknown error");
-        addLog("Job failed: " + (data.error || "Unknown error"), "error");
-        if (generateBtn) generateBtn.disabled = false;
-        return;
+        throw new Error(data.error || "Job failed");
       } else if (data.status === "processing" || data.status === "queued") {
-        if (data.progress !== undefined) {
-          const pct = Math.min(100, Math.max(0, data.progress));
-          if (progressBar) progressBar.style.width = `${pct}%`;
-          if (progressPercent) progressPercent.textContent = `${pct}%`;
-        }
-        if (data.message && statusMessage) {
-          statusMessage.textContent = data.message;
-        }
+        handleProgressUpdate({ progress: data.progress, message: data.message }, item);
       }
     } catch (e) {
       console.warn("Poll attempt failed, retrying...", e);
     }
   }
+  return null;
 }
 
-function handleProgressUpdate(data) {
+// =========================================================================
+// 4. Accurate Percentage Progress & Live Status Handling
+// =========================================================================
+function handleProgressUpdate(data, currentQueueItem) {
   if (data.progress !== undefined) {
     const pct = Math.min(100, Math.max(0, data.progress));
     if (progressBar) progressBar.style.width = `${pct}%`;
     if (progressPercent) progressPercent.textContent = `${pct}%`;
+    if (currentQueueItem) currentQueueItem.progress = pct;
+  }
+
+  // Exact time progress (e.g. 02:15 / 05:00 (45%))
+  if (data.current_time_fmt && data.total_duration_fmt && accurateProgressPill) {
+    accurateProgressPill.textContent = `${data.current_time_fmt} / ${data.total_duration_fmt} (${data.progress}%)`;
+    accurateProgressPill.classList.remove("hidden");
+  }
+
+  // Estimated Time Remaining (ETA)
+  if (data.eta_fmt && etaTimerPill) {
+    etaTimerPill.textContent = `ETA: ~${data.eta_fmt}`;
+    etaTimerPill.classList.remove("hidden");
   }
 
   if (data.message) {
@@ -425,85 +669,39 @@ function handleProgressUpdate(data) {
     speedupPill.textContent = `⚡ ${data.speedup_factor}x Speedup`;
     speedupPill.classList.remove("hidden");
   }
-
-  if (data.step === "completed") {
-    if (eventSource) eventSource.close();
-    stopTimer();
-    addLog(`Subtitles generated successfully! Intermediate audio purged by Rust.`, "success");
-    fetchJobResult(currentJobId);
-  } else if (data.step === "error") {
-    if (eventSource) eventSource.close();
-    stopTimer();
-    addLog("Transcription error: " + data.message, "error");
-    if (generateBtn) generateBtn.disabled = false;
-  }
-}
-
-async function fetchJobResult(jobId) {
-  try {
-    const res = await fetch(`/api/jobs/${jobId}/status`);
-    const data = await res.json();
-    if (data.status === "failed") {
-      stopTimer();
-      if (statusMessage) statusMessage.textContent = "Failed: " + (data.error || "Unknown error");
-      addLog("Job failed: " + (data.error || "Unknown error"), "error");
-      if (generateBtn) generateBtn.disabled = false;
-      return;
-    }
-    if (!data.result) {
-      addLog("Job result not available yet, polling...", "warn");
-      checkJobStatusPoll(jobId);
-      return;
-    }
-    finishJob(data.result);
-  } catch (err) {
-    addLog("Error fetching results: " + err.message, "error");
-  }
 }
 
 // =========================================================================
-// 4. Subtitle Studio Completion & Metrics Display
+// 5. Studio Results & Synchronized Video Player Preview
 // =========================================================================
 function finishJob(result) {
   currentJobData = result;
-  // Deep clone segments to preserve originals for offset resets
   originalSegments = JSON.parse(JSON.stringify(result.segments || []));
   parsedSegments = JSON.parse(JSON.stringify(result.segments || []));
   totalSyncOffset = 0.0;
   if (offsetDisplay) offsetDisplay.textContent = "0.0s";
 
-  setTimeout(() => {
-    if (progressSection) progressSection.classList.add("hidden");
-  }, 1000);
-
   if (resultsSection) resultsSection.classList.remove("hidden");
-  if (generateBtn) generateBtn.disabled = false;
 
-  // Calculate Studio Metrics
+  // Metrics
   const langName = (result.detected_language || "en").toUpperCase();
   const cueCount = parsedSegments.length;
   let wordCount = 0;
   parsedSegments.forEach(s => {
-    const words = s.text.trim().split(/\s+/).filter(w => w.length > 0);
-    wordCount += words.length;
+    wordCount += s.text.trim().split(/\s+/).filter(w => w.length > 0).length;
   });
 
   const durationSec = result.total_duration || (parsedSegments.length > 0 ? parsedSegments[parsedSegments.length - 1].end : 0);
-  const durMinutes = Math.floor(durationSec / 60);
-  const durSecs = Math.floor(durationSec % 60);
-  const durFormatted = durMinutes > 0 ? `${durMinutes}m ${durSecs}s` : `${durationSec.toFixed(1)}s`;
+  const durMin = Math.floor(durationSec / 60);
+  const durSec = Math.floor(durationSec % 60);
+  const durFormatted = durMin > 0 ? `${durMin}m ${durSec}s` : `${durationSec.toFixed(1)}s`;
 
   if (statLang) statLang.textContent = `🌐 ${langName} (${result.language_probability ? result.language_probability + '%' : '100%'})`;
   if (statCues) statCues.textContent = `📝 ${cueCount} Cues`;
   if (statWords) statWords.textContent = `💬 ${wordCount} Words`;
   if (statDuration) statDuration.textContent = `⏱️ ${durFormatted}`;
-  if (statSpeed) {
-    const speed = result.speedup_factor ? `${result.speedup_factor}x Acceleration` : "170x Acceleration";
-    statSpeed.textContent = `⚡ ${speed}`;
-  }
-  if (statPurge) {
-    statPurge.textContent = result.video_deleted ? "🗑️ Video Purged (0B Disk Waste)" : "💾 Audio Cleaned";
-  }
+  if (statSpeed) statSpeed.textContent = `⚡ ${result.speedup_factor || 170}x Acceleration`;
+
   if (statNoise) {
     const nMap = {
       "studio": "🎙️ Denoised: Studio Clarity",
@@ -514,26 +712,9 @@ function finishJob(result) {
     statNoise.textContent = nMap[result.noise_reduction] || "🎙️ Denoised: Studio Clarity";
   }
 
-  // Setup Download Links with clean names
+  // Setup Download Links
   const originalName = result.filename || (currentFile ? currentFile.name : `subtitles_${result.job_id}`);
   const stem = originalName.replace(/\.[^/.]+$/, "");
-
-  if (downloadCleanAudioBtn) {
-    if (result.clean_audio_url) {
-      downloadCleanAudioBtn.classList.remove("hidden");
-      downloadCleanAudioBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
-          <path d="M9 18V5l12-2v13"></path>
-          <circle cx="6" cy="18" r="3"></circle>
-          <circle cx="18" cy="16" r="3"></circle>
-        </svg>
-        Clean Audio (.MP3)
-      `;
-      downloadCleanAudioBtn.onclick = () => window.location.href = `/api/jobs/${result.job_id}/clean-audio`;
-    } else {
-      downloadCleanAudioBtn.classList.add("hidden");
-    }
-  }
 
   if (downloadSrtBtn) {
     downloadSrtBtn.innerHTML = `
@@ -557,20 +738,147 @@ function finishJob(result) {
     downloadTxtBtn.onclick = () => window.location.href = `/api/jobs/${result.job_id}/download/txt`;
   }
 
-  // Render Full-Width Studio Timeline
-  renderStudioTimeline(parsedSegments);
+  if (downloadCleanAudioBtn) {
+    if (result.clean_audio_url) {
+      downloadCleanAudioBtn.classList.remove("hidden");
+      downloadCleanAudioBtn.onclick = () => window.location.href = `/api/jobs/${result.job_id}/clean-audio`;
+    } else {
+      downloadCleanAudioBtn.classList.add("hidden");
+    }
+  }
+
+  // Bind HTML5 Video Player
+  setupVideoPlayer(result);
+
+  // Render Interactive Subtitle Table
+  renderSubtitleTable(parsedSegments);
+
   resultsSection.scrollIntoView({ behavior: "smooth" });
 }
 
 // =========================================================================
-// 5. Full-Width Subtitle Timeline & Segment Editing
+// 6. Video Player Synchronization & Controls
 // =========================================================================
-function renderStudioTimeline(segments, filterText = "") {
-  if (!timelineList) return;
-  timelineList.innerHTML = "";
+function setupVideoPlayer(result) {
+  if (!studioVideoPlayer) return;
+
+  // Use local in-memory Object URL if user uploaded file, else load server endpoint
+  if (currentFile && currentFile instanceof File) {
+    try {
+      studioVideoPlayer.src = URL.createObjectURL(currentFile);
+    } catch {
+      studioVideoPlayer.src = `/api/jobs/${result.job_id}/video`;
+    }
+  } else {
+    studioVideoPlayer.src = `/api/jobs/${result.job_id}/video`;
+  }
+
+  studioVideoPlayer.load();
+
+  // Synchronized Subtitle Overlay update on timeupdate
+  studioVideoPlayer.ontimeupdate = () => {
+    const curTime = studioVideoPlayer.currentTime;
+    syncSubtitleOverlayAndTable(curTime);
+  };
+
+  if (videoPlayPauseBtn) {
+    videoPlayPauseBtn.onclick = () => {
+      if (studioVideoPlayer.paused) {
+        studioVideoPlayer.play();
+        videoPlayPauseBtn.textContent = "⏸️ Pause";
+      } else {
+        studioVideoPlayer.pause();
+        videoPlayPauseBtn.textContent = "⏯️ Play";
+      }
+    };
+  }
+
+  if (videoSkipBackBtn) {
+    videoSkipBackBtn.onclick = () => {
+      studioVideoPlayer.currentTime = Math.max(0, studioVideoPlayer.currentTime - 5);
+    };
+  }
+
+  if (videoSkipFwdBtn) {
+    videoSkipFwdBtn.onclick = () => {
+      studioVideoPlayer.currentTime = Math.min(studioVideoPlayer.duration || Infinity, studioVideoPlayer.currentTime + 5);
+    };
+  }
+
+  if (videoSpeedSelect) {
+    videoSpeedSelect.onchange = (e) => {
+      studioVideoPlayer.playbackRate = parseFloat(e.target.value) || 1.0;
+    };
+  }
+
+  if (toggleSubtitleOverlayBtn) {
+    toggleSubtitleOverlayBtn.onclick = () => {
+      overlayEnabled = !overlayEnabled;
+      if (videoSubtitleOverlay) {
+        videoSubtitleOverlay.style.display = overlayEnabled ? "block" : "none";
+      }
+      toggleSubtitleOverlayBtn.textContent = overlayEnabled ? "💬 Overlay ON" : "💬 Overlay OFF";
+      toggleSubtitleOverlayBtn.classList.toggle("active", overlayEnabled);
+    };
+  }
+}
+
+function syncSubtitleOverlayAndTable(currentTime) {
+  let activeCue = null;
+  let activeIndex = -1;
+
+  for (let i = 0; i < parsedSegments.length; i++) {
+    const seg = parsedSegments[i];
+    if (currentTime >= seg.start && currentTime <= seg.end) {
+      activeCue = seg;
+      activeIndex = i;
+      break;
+    }
+  }
+
+  // Update on-screen overlay
+  if (videoSubtitleOverlay && overlaySubtitleText) {
+    if (activeCue && overlayEnabled) {
+      overlaySubtitleText.textContent = activeCue.text;
+      videoSubtitleOverlay.classList.remove("hidden");
+    } else {
+      videoSubtitleOverlay.classList.add("hidden");
+    }
+  }
+
+  // Highlight and smoothly scroll table row
+  const rows = subtitleTableBody ? subtitleTableBody.querySelectorAll(".subtitle-row") : [];
+  rows.forEach((row, idx) => {
+    if (idx === activeIndex) {
+      if (!row.classList.contains("active")) {
+        row.classList.add("active");
+        // Scroll only if row is not visible
+        const container = editorTableContainer;
+        if (container) {
+          const rowTop = row.offsetTop;
+          const rowBottom = rowTop + row.offsetHeight;
+          const viewTop = container.scrollTop;
+          const viewBottom = viewTop + container.clientHeight;
+          if (rowTop < viewTop || rowBottom > viewBottom) {
+            row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+        }
+      }
+    } else {
+      row.classList.remove("active");
+    }
+  });
+}
+
+// =========================================================================
+// 7. Interactive Subtitle Table & Inline Editor
+// =========================================================================
+function renderSubtitleTable(segments, filterText = "") {
+  if (!subtitleTableBody) return;
+  subtitleTableBody.innerHTML = "";
 
   if (!segments || segments.length === 0) {
-    timelineList.innerHTML = '<p class="hint" style="text-align:center; padding: 36px;">No speech segments detected.</p>';
+    subtitleTableBody.innerHTML = '<tr><td colspan="4" class="hint" style="text-align:center; padding: 32px;">No speech segments found.</td></tr>';
     return;
   }
 
@@ -578,79 +886,42 @@ function renderStudioTimeline(segments, filterText = "") {
   let matchCount = 0;
 
   segments.forEach((seg, idx) => {
-    const textLower = seg.text.toLowerCase();
-    const timeMatch = seg.start_fmt.includes(query) || seg.end_fmt.includes(query);
+    const textLower = (seg.text || "").toLowerCase();
+    const timeMatch = (seg.start_fmt || "").includes(query) || (seg.end_fmt || "").includes(query);
     const textMatch = textLower.includes(query);
     const isVisible = query === "" || textMatch || timeMatch;
 
     if (isVisible) matchCount++;
 
-    const card = document.createElement("div");
-    card.className = `segment-card ${isVisible ? "" : "hidden"}`;
-    card.id = `seg-${seg.id || (idx + 1)}`;
-    card.dataset.id = seg.id || (idx + 1);
-    card.dataset.index = idx;
+    const row = document.createElement("tr");
+    row.className = `subtitle-row ${isVisible ? "" : "hidden"}`;
+    row.id = `row-${idx}`;
+    row.dataset.index = idx;
 
-    // Calculate reading pace (characters per second)
-    const duration = Math.max(0.1, (seg.end - seg.start));
-    const charCount = seg.text.trim().length;
-    const cps = (charCount / duration).toFixed(1);
-    let paceClass = "normal";
-    let paceLabel = `${cps} cps`;
-    if (cps > 22) {
-      paceClass = "fast";
-      paceLabel = `${cps} cps (Fast)`;
-    } else if (cps < 8) {
-      paceLabel = `${cps} cps (Relaxed)`;
-    }
-
-    card.innerHTML = `
-      <div class="segment-header">
-        <div class="segment-meta-left">
-          <span class="segment-num">#${idx + 1}</span>
-          <span class="segment-time" id="time-${idx}">${seg.start_fmt} ➔ ${seg.end_fmt}</span>
-          <span class="segment-duration-pill" id="dur-${idx}">(${duration.toFixed(1)}s)</span>
+    row.innerHTML = `
+      <td class="row-index">${idx + 1}</td>
+      <td class="timing-cell">
+        <div class="timing-inputs">
+          <button type="button" class="timing-pill-btn" onclick="seekVideoTo(${seg.start})" title="Jump video to start time">
+            ${seg.start_fmt || formatSecondsToSrt(seg.start)}
+          </button>
+          <span class="timing-arrow">➔</span>
+          <button type="button" class="timing-pill-btn" onclick="seekVideoTo(${seg.end})" title="Jump video to end time">
+            ${seg.end_fmt || formatSecondsToSrt(seg.end)}
+          </button>
         </div>
-        <div class="segment-meta-right">
-          <span class="pace-pill ${paceClass}" id="pace-${idx}">${paceLabel}</span>
-          <button type="button" class="card-action-btn copy-cue-btn" title="Copy this cue" data-idx="${idx}">📋</button>
-          <button type="button" class="card-action-btn delete-btn" title="Delete this cue" data-idx="${idx}">✕</button>
+      </td>
+      <td class="text-cell">
+        <textarea class="subtitle-edit-input" oninput="updateSegmentText(${idx}, this.value)" rows="1">${escapeHtml(seg.text)}</textarea>
+      </td>
+      <td class="action-cell">
+        <div class="row-actions">
+          <button type="button" class="btn-icon-sm" onclick="playSegment(${idx})" title="Play this segment">▶</button>
+          <button type="button" class="btn-icon-sm delete" onclick="deleteSegment(${idx})" title="Delete subtitle line">🗑️</button>
         </div>
-      </div>
-      <div class="segment-text" contenteditable="true" spellcheck="false" data-idx="${idx}">${escapeHtml(seg.text)}</div>
+      </td>
     `;
-
-    // Blur / change on editable text
-    const textEl = card.querySelector(".segment-text");
-    textEl.addEventListener("input", () => {
-      seg.text = textEl.innerText.trim();
-      // Recalculate pace live
-      const newDur = Math.max(0.1, (seg.end - seg.start));
-      const newCps = (seg.text.length / newDur).toFixed(1);
-      const pacePill = card.querySelector(`#pace-${idx}`);
-      if (pacePill) pacePill.textContent = `${newCps} cps`;
-    });
-
-    // Copy single cue
-    const copyBtn = card.querySelector(".copy-cue-btn");
-    copyBtn.addEventListener("click", () => {
-      navigator.clipboard.writeText(seg.text).then(() => {
-        copyBtn.textContent = "✓";
-        setTimeout(() => copyBtn.textContent = "📋", 1500);
-      });
-    });
-
-    // Delete single cue
-    const delBtn = card.querySelector(".delete-btn");
-    delBtn.addEventListener("click", () => {
-      if (confirm(`Delete subtitle cue #${idx + 1}?`)) {
-        parsedSegments.splice(idx, 1);
-        renderStudioTimeline(parsedSegments, subtitleSearchInput ? subtitleSearchInput.value : "");
-        if (statCues) statCues.textContent = `📝 ${parsedSegments.length} Cues`;
-      }
-    });
-
-    timelineList.appendChild(card);
+    subtitleTableBody.appendChild(row);
   });
 
   if (searchMatchCount) {
@@ -663,205 +934,280 @@ function renderStudioTimeline(segments, filterText = "") {
   }
 }
 
-// =========================================================================
-// 6. Search & Real-Time Filter
-// =========================================================================
-if (subtitleSearchInput) {
-  subtitleSearchInput.addEventListener("input", (e) => {
-    const val = e.target.value;
-    renderStudioTimeline(parsedSegments, val);
-  });
-}
-
-// =========================================================================
-// 7. Global Time Offset Sync Shifter (+/- 0.5s)
-// =========================================================================
-function applyTimeShift(deltaSeconds) {
-  totalSyncOffset += deltaSeconds;
-  totalSyncOffset = Math.round(totalSyncOffset * 10) / 10;
-
-  if (offsetDisplay) {
-    const sign = totalSyncOffset > 0 ? "+" : "";
-    offsetDisplay.textContent = `${sign}${totalSyncOffset.toFixed(1)}s`;
-    offsetDisplay.style.color = totalSyncOffset !== 0 ? "var(--rust-orange)" : "var(--primary)";
+window.seekVideoTo = (seconds) => {
+  if (studioVideoPlayer) {
+    studioVideoPlayer.currentTime = Math.max(0, seconds);
+    studioVideoPlayer.play();
+    if (videoPlayPauseBtn) videoPlayPauseBtn.textContent = "⏸️ Pause";
   }
+};
 
-  // Update all segments from original baseline
-  parsedSegments.forEach((seg, idx) => {
-    const orig = originalSegments[idx];
-    if (!orig) return;
+window.playSegment = (index) => {
+  const seg = parsedSegments[index];
+  if (!seg || !studioVideoPlayer) return;
+  studioVideoPlayer.currentTime = seg.start;
+  studioVideoPlayer.play();
+  if (videoPlayPauseBtn) videoPlayPauseBtn.textContent = "⏸️ Pause";
 
-    seg.start = Math.max(0, orig.start + totalSyncOffset);
-    seg.end = Math.max(seg.start + 0.1, orig.end + totalSyncOffset);
-    seg.start_fmt = formatTimestampSrt(seg.start);
-    seg.end_fmt = formatTimestampSrt(seg.end);
-
-    const timeEl = document.getElementById(`time-${idx}`);
-    if (timeEl) {
-      timeEl.textContent = `${seg.start_fmt} ➔ ${seg.end_fmt}`;
+  const onSegmentEnd = () => {
+    if (studioVideoPlayer.currentTime >= seg.end) {
+      studioVideoPlayer.pause();
+      if (videoPlayPauseBtn) videoPlayPauseBtn.textContent = "⏯️ Play";
+      studioVideoPlayer.removeEventListener("timeupdate", onSegmentEnd);
     }
-    const durEl = document.getElementById(`dur-${idx}`);
-    if (durEl) {
-      durEl.textContent = `(${(seg.end - seg.start).toFixed(1)}s)`;
-    }
-  });
-}
+  };
+  studioVideoPlayer.addEventListener("timeupdate", onSegmentEnd);
+};
 
-function resetTimeShift() {
-  totalSyncOffset = 0.0;
-  if (offsetDisplay) {
-    offsetDisplay.textContent = "0.0s";
-    offsetDisplay.style.color = "var(--primary)";
+window.updateSegmentText = (index, newText) => {
+  if (parsedSegments[index]) {
+    parsedSegments[index].text = newText;
+    showSaveIndicator("Editing...");
   }
-  parsedSegments.forEach((seg, idx) => {
-    const orig = originalSegments[idx];
-    if (!orig) return;
-    seg.start = orig.start;
-    seg.end = orig.end;
-    seg.start_fmt = orig.start_fmt;
-    seg.end_fmt = orig.end_fmt;
+};
 
-    const timeEl = document.getElementById(`time-${idx}`);
-    if (timeEl) timeEl.textContent = `${seg.start_fmt} ➔ ${seg.end_fmt}`;
-    const durEl = document.getElementById(`dur-${idx}`);
-    if (durEl) durEl.textContent = `(${(seg.end - seg.start).toFixed(1)}s)`;
+window.deleteSegment = (index) => {
+  if (!confirm(`Delete subtitle line #${index + 1}?`)) return;
+  parsedSegments.splice(index, 1);
+  reindexSegments();
+  renderSubtitleTable(parsedSegments);
+  showSaveIndicator("Line deleted");
+};
+
+function reindexSegments() {
+  parsedSegments.forEach((seg, i) => {
+    seg.id = i + 1;
+    seg.start_fmt = formatSecondsToSrt(seg.start);
+    seg.end_fmt = formatSecondsToSrt(seg.end);
   });
 }
 
+// Add Cue button
+if (addCueBtn) {
+  addCueBtn.addEventListener("click", () => {
+    const curTime = studioVideoPlayer ? studioVideoPlayer.currentTime : 0;
+    const newCue = {
+      id: parsedSegments.length + 1,
+      start: roundMs(curTime),
+      end: roundMs(curTime + 2.5),
+      start_fmt: formatSecondsToSrt(curTime),
+      end_fmt: formatSecondsToSrt(curTime + 2.5),
+      text: "New subtitle text"
+    };
+
+    // Insert sorted by start time
+    let inserted = false;
+    for (let i = 0; i < parsedSegments.length; i++) {
+      if (parsedSegments[i].start > newCue.start) {
+        parsedSegments.splice(i, 0, newCue);
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) parsedSegments.push(newCue);
+
+    reindexSegments();
+    renderSubtitleTable(parsedSegments);
+    showSaveIndicator("New line added");
+  });
+}
+
+// Timing Sync Offset Shifter
 if (shiftBackBtn) {
-  shiftBackBtn.addEventListener("click", () => applyTimeShift(-0.5));
+  shiftBackBtn.addEventListener("click", () => applySyncOffset(-0.5));
 }
 if (shiftFwdBtn) {
-  shiftFwdBtn.addEventListener("click", () => applyTimeShift(0.5));
+  shiftFwdBtn.addEventListener("click", () => applySyncOffset(0.5));
 }
 if (resetShiftBtn) {
-  resetShiftBtn.addEventListener("click", resetTimeShift);
+  resetShiftBtn.addEventListener("click", () => {
+    totalSyncOffset = 0.0;
+    if (offsetDisplay) offsetDisplay.textContent = "0.0s";
+    parsedSegments = JSON.parse(JSON.stringify(originalSegments));
+    reindexSegments();
+    renderSubtitleTable(parsedSegments);
+    showSaveIndicator("Timing reset to original");
+  });
 }
 
-// =========================================================================
-// 8. Copy All and Export Edited Subtitles
-// =========================================================================
+function applySyncOffset(delta) {
+  totalSyncOffset += delta;
+  if (offsetDisplay) offsetDisplay.textContent = `${totalSyncOffset > 0 ? '+' : ''}${totalSyncOffset.toFixed(1)}s`;
+
+  parsedSegments.forEach(seg => {
+    seg.start = Math.max(0, roundMs(seg.start + delta));
+    seg.end = Math.max(seg.start + 0.1, roundMs(seg.end + delta));
+    seg.start_fmt = formatSecondsToSrt(seg.start);
+    seg.end_fmt = formatSecondsToSrt(seg.end);
+  });
+
+  renderSubtitleTable(parsedSegments);
+  showSaveIndicator(`Timing shifted ${totalSyncOffset > 0 ? '+' : ''}${totalSyncOffset.toFixed(1)}s`);
+}
+
+// Search filter
+if (subtitleSearchInput) {
+  subtitleSearchInput.addEventListener("input", (e) => {
+    renderSubtitleTable(parsedSegments, e.target.value);
+  });
+}
+
+// Copy All Text
 if (copyAllBtn) {
   copyAllBtn.addEventListener("click", () => {
-    const allText = parsedSegments.map(s => `[${s.start_fmt} --> ${s.end_fmt}]\n${s.text}`).join("\n\n");
-    navigator.clipboard.writeText(allText).then(() => {
-      const origHtml = copyAllBtn.innerHTML;
-      copyAllBtn.innerHTML = "✓ Copied!";
-      setTimeout(() => copyAllBtn.innerHTML = origHtml, 2000);
+    const fullText = parsedSegments.map(s => `[${s.start_fmt}] ${s.text}`).join("\n");
+    navigator.clipboard.writeText(fullText).then(() => {
+      alert("All subtitle text copied to clipboard!");
     });
   });
 }
 
-if (exportEditedSrtBtn) {
-  exportEditedSrtBtn.addEventListener("click", () => {
-    let srtContent = "";
-    parsedSegments.forEach((seg, idx) => {
-      srtContent += `${idx + 1}\n${seg.start_fmt} --> ${seg.end_fmt}\n${seg.text}\n\n`;
+// Save & Export Edited .SRT
+if (saveEditsBtn) {
+  saveEditsBtn.addEventListener("click", async () => {
+    if (!currentJobId) return;
+
+    saveEditsBtn.disabled = true;
+    showSaveIndicator("Saving to server...");
+
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/subtitles/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: parsedSegments })
+      });
+
+      if (!res.ok) throw new Error("Failed to save updates");
+      showSaveIndicator("✓ Saved & Updated!");
+
+      // Trigger automatic download of updated .SRT file
+      window.location.href = `/api/jobs/${currentJobId}/download/srt`;
+    } catch (e) {
+      alert("Save error: " + e.message);
+      showSaveIndicator("Save failed");
+    } finally {
+      saveEditsBtn.disabled = false;
+    }
+  });
+}
+
+function showSaveIndicator(msg) {
+  if (saveStatusBadge) {
+    saveStatusBadge.textContent = msg;
+    saveStatusBadge.style.color = "#3b82f6";
+    setTimeout(() => {
+      saveStatusBadge.textContent = "✓ Auto-Sync Active";
+      saveStatusBadge.style.color = "#10b981";
+    }, 2500);
+  }
+}
+
+// Download Batch Zip
+async function downloadBatchZip() {
+  const completedJobIds = batchQueue
+    .filter(item => item.status === "completed" && item.jobId)
+    .map(item => item.jobId);
+
+  if (completedJobIds.length === 0) {
+    alert("No completed subtitle files to download.");
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/batch/export-zip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_ids: completedJobIds })
     });
 
-    const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
+    if (!res.ok) throw new Error("Batch zip generation failed");
+    const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const stem = (currentJobData && currentJobData.filename)
-      ? currentJobData.filename.replace(/\.[^/.]+$/, "")
-      : (currentFile ? currentFile.name.replace(/\.[^/.]+$/, "") : (currentJobId || "subtitles"));
-    
-    const offsetSuffix = totalSyncOffset !== 0 ? `_offset_${totalSyncOffset > 0 ? '+' : ''}${totalSyncOffset}s` : '';
-    a.download = `${stem}_edited${offsetSuffix}.srt`;
+    a.download = "whisper_batch_subtitles.zip";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  });
+  } catch (err) {
+    alert("Batch download error: " + err.message);
+  }
 }
 
 // =========================================================================
-// 9. Formatters & Helpers
+// 8. Timers & Terminal Logging Helpers
 // =========================================================================
-function formatTimestampSrt(totalSeconds) {
-  if (totalSeconds < 0) totalSeconds = 0;
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  const milliseconds = Math.floor((totalSeconds % 1) * 1000);
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(milliseconds).padStart(3, "0")}`;
-}
-
-function addLog(text, type = "normal") {
-  if (!logTerminal) return;
-  const entry = document.createElement("div");
-  entry.className = `log-entry ${type}`;
-  const timeStr = new Date().toLocaleTimeString();
-  entry.textContent = `[${timeStr}] ${text}`;
-  logTerminal.appendChild(entry);
-  logTerminal.scrollTop = logTerminal.scrollHeight;
-}
-
 function startTimer() {
+  stopTimer();
   timerStart = Date.now();
+  if (elapsedTimer) elapsedTimer.textContent = "Elapsed: 00:00";
   timerInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - timerStart) / 1000);
-    const m = Math.floor(elapsed / 60).toString().padStart(2, "0");
-    const s = (elapsed % 60).toString().padStart(2, "0");
-    if (elapsedTimer) elapsedTimer.textContent = `${m}:${s}`;
+    const totalSecs = Math.floor((Date.now() - timerStart) / 1000);
+    const m = String(Math.floor(totalSecs / 60)).padStart(2, "0");
+    const s = String(totalSecs % 60).padStart(2, "0");
+    if (elapsedTimer) elapsedTimer.textContent = `Elapsed: ${m}:${s}`;
   }, 1000);
 }
 
 function stopTimer() {
-  if (timerInterval) {
-    clearInterval(timerInterval);
-    timerInterval = null;
-  }
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+}
+
+function addLog(msg, type = "info") {
+  if (!logTerminal) return;
+  const line = document.createElement("div");
+  line.className = `log-line ${type}`;
+
+  const timeStr = new Date().toLocaleTimeString("en-US", { hour12: true, hour: "numeric", minute: "numeric", second: "numeric" });
+  line.innerHTML = `<span class="log-ts">[${timeStr}]</span> ${escapeHtml(msg)}`;
+  logTerminal.appendChild(line);
+  logTerminal.scrollTop = logTerminal.scrollHeight;
+}
+
+function formatSecondsToSrt(seconds) {
+  const totalMs = Math.max(0, Math.round(seconds * 1000));
+  const ms = totalMs % 1000;
+  const totalSecs = Math.floor(totalMs / 1000);
+  const s = totalSecs % 60;
+  const totalMins = Math.floor(totalSecs / 60);
+  const m = totalMins % 60;
+  const h = Math.floor(totalMins / 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+function roundMs(val) {
+  return Math.round(val * 1000) / 1000;
 }
 
 function escapeHtml(str) {
   if (!str) return "";
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
-async function checkActiveSession() {
-  const saved = localStorage.getItem("whisper_active_job");
-  if (!saved) return;
-  try {
-    const jobInfo = JSON.parse(saved);
-    if (!jobInfo.jobId) return;
-    // Expire sessions older than 24 hours
-    if (Date.now() - (jobInfo.timestamp || 0) > 86400000) {
-      localStorage.removeItem("whisper_active_job");
-      return;
+// Cancel job button
+if (cancelJobBtn) {
+  cancelJobBtn.addEventListener("click", () => {
+    if (confirm("Reset current view and start over?")) {
+      stopTimer();
+      if (progressSection) progressSection.classList.add("hidden");
+      if (setupSection) setupSection.classList.remove("hidden");
+      if (generateBtn) generateBtn.disabled = batchQueue.length === 0;
     }
-
-    const res = await fetch(`/api/jobs/${jobInfo.jobId}/status`);
-    if (!res.ok) {
-      localStorage.removeItem("whisper_active_job");
-      return;
-    }
-    const data = await res.json();
-    if (data.status === "processing" || data.status === "queued") {
-      currentJobId = jobInfo.jobId;
-      if (progressSection) progressSection.classList.remove("hidden");
-      if (setupSection) setupSection.classList.add("hidden");
-      if (resultsSection) resultsSection.classList.add("hidden");
-      if (generateBtn) generateBtn.disabled = true;
-      if (fileNameEl) fileNameEl.textContent = jobInfo.filename || "video.mp4";
-      addLog(`[Session Restored] Reconnected to active job #${jobInfo.jobId} for "${jobInfo.filename || 'video'}".`, "success");
-      startTimer();
-      handleProgressUpdate(data);
-      connectEventSource(currentJobId);
-    } else if (data.status === "completed" && data.result) {
-      localStorage.removeItem("whisper_active_job");
-      finishJob(data.result);
-    } else {
-      localStorage.removeItem("whisper_active_job");
-    }
-  } catch (e) {
-    console.warn("Could not restore session:", e);
-  }
+  });
 }
 
-// Initialize on Load
-initSystemStatus();
-setupDropzone();
-checkActiveSession();
-setInterval(initSystemStatus, 5000);
+// =========================================================================
+// 9. Startup
+// =========================================================================
+document.addEventListener("DOMContentLoaded", () => {
+  setupDropzone();
+  initSystemStatus();
+  setInterval(initSystemStatus, 8000);
+});

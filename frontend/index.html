@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Whisper Subtitle Studio - High-Concurrency GPU & Rust Platform</title>
-  <meta name="description" content="Production-grade AI subtitle generator powered by Rust concurrency and NVIDIA CUDA Whisper models.">
+  <meta name="description" content="Production-grade AI subtitle generator powered by Rust concurrency and NVIDIA CUDA Whisper models with interactive video subtitle editor.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -25,7 +25,7 @@
         </div>
         <div>
           <h1>Whisper Subtitle Studio</h1>
-          <p class="subtitle">Multi-User AI Platform • Rust Concurrency Core & NVIDIA CUDA Acceleration</p>
+          <p class="subtitle">Multi-User AI Studio • Rust Concurrency Core & NVIDIA CUDA Acceleration</p>
         </div>
       </div>
 
@@ -61,6 +61,22 @@
       </div>
     </header>
 
+    <!-- 1-Click CUDA Acceleration Notification Banner (Appears if NVIDIA GPU is present without CUDA runtime) -->
+    <div class="cuda-notice-banner hidden" id="cudaNoticeBanner">
+      <div class="cuda-notice-left">
+        <div class="cuda-pulse-icon">⚡</div>
+        <div>
+          <strong id="cudaNoticeTitle">NVIDIA GPU Detected!</strong>
+          <p id="cudaNoticeText">An NVIDIA graphics card was detected, but CUDA cuDNN libraries are needed for full 20x–50x Tensor Core acceleration.</p>
+        </div>
+      </div>
+      <div class="cuda-notice-actions">
+        <button type="button" class="btn btn-emerald btn-glow" id="installCudaBtn">
+          <span id="installCudaBtnText">⚡ Enable 1-Click CUDA Acceleration</span>
+        </button>
+      </div>
+    </div>
+
     <!-- Main Workspace -->
     <main class="main-content">
       <!-- 1. Upload & Settings -->
@@ -69,13 +85,13 @@
           <h2>1. Video Upload & Model Settings</h2>
           <div style="display:flex; gap:8px; align-items:center;">
             <span class="badge badge-turbo">⚡ 170x Batched Acceleration</span>
-            <span class="badge">Multi-Client Concurrency</span>
+            <span class="badge">Batch Queue Supported</span>
           </div>
         </div>
 
-        <!-- Dropzone -->
+        <!-- Dropzone (Supports Multiple Files) -->
         <div class="dropzone" id="dropzone">
-          <input type="file" id="videoFileInput" accept="video/*,audio/*" class="file-input">
+          <input type="file" id="videoFileInput" accept="video/*,audio/*" class="file-input" multiple>
           <div class="dropzone-content" id="dropzonePrompt">
             <div class="upload-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -84,20 +100,40 @@
                 <line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
             </div>
-            <h3>Drag & Drop Video Here</h3>
-            <p>or <span class="browse-btn">browse file</span> from your computer</p>
-          </div>
-
-          <!-- File Info Preview inside Dropzone -->
-          <div class="selected-file-info hidden" id="selectedFileInfo">
-            <div class="file-meta">
-              <span class="file-icon">🎬</span>
-              <div>
-                <strong id="fileName">video.mp4</strong>
-                <span id="fileSize">0 MB</span>
-              </div>
+            <h3>Drag & Drop Video(s) Here</h3>
+            <p>Single video or <span class="browse-btn">browse multiple files</span> for batch processing queue</p>
+            <div class="dropzone-tags">
+              <span class="tag">MP4</span>
+              <span class="tag">MKV</span>
+              <span class="tag">MOV</span>
+              <span class="tag">WEBM</span>
+              <span class="tag">MP3</span>
+              <span class="tag">WAV</span>
+              <span class="tag">Batch 5-10+ Files</span>
             </div>
-            <button type="button" class="btn-icon" id="removeFileBtn" title="Remove file">✕</button>
+          </div>
+        </div>
+
+        <!-- Batch Queue Container (Visible when 1 or more files are selected) -->
+        <div class="batch-queue-container hidden" id="batchQueueContainer">
+          <div class="batch-queue-header">
+            <div>
+              <h3>📁 Files in Queue (<span id="batchCountBadge">0 files</span>)</h3>
+              <span class="hint" id="batchSizeHint">Total: 0 MB</span>
+            </div>
+            <div class="batch-header-actions">
+              <button type="button" class="btn btn-secondary btn-sm" id="addMoreFilesBtn">➕ Add More</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="clearBatchBtn">✕ Clear All</button>
+            </div>
+          </div>
+          <div class="batch-file-list" id="batchFileList">
+            <!-- Dynamically populated file cards -->
+          </div>
+          <div class="batch-footer-row" id="batchFooterRow">
+            <span class="batch-status-summary" id="batchStatusSummary">Sequential batch queue ready</span>
+            <button type="button" class="btn btn-emerald btn-sm hidden" id="downloadBatchZipBtn">
+              📦 Download All Subtitles (.ZIP)
+            </button>
           </div>
         </div>
 
@@ -110,7 +146,7 @@
                 <strong>Maximum Power GPU Engine (170x Tensor Core Batching)</strong>
                 <span class="badge badge-emerald">Ultra Fast</span>
               </div>
-              <p>When queue is empty, dynamically saturates GPU Tensor Cores with parallel audio chunks (transcribes up to 10 hours of video in ~4 to 5 minutes).</p>
+              <p>Dynamically saturates GPU Tensor Cores with parallel audio chunks (transcribes up to 10 hours of video in ~4 to 5 minutes).</p>
             </div>
           </div>
           <label class="switch" title="Toggle Maximum Power Turbo Mode">
@@ -155,7 +191,7 @@
               <option value="tiny">Tiny (~75MB) [⚡ Ultra Fast • Instant Start]</option>
               <option value="large-v3">Large-v3 (~3GB) [🧠 Maximum Multilingual Accuracy]</option>
             </select>
-            <small class="hint" id="modelHint">All key models pre-downloaded & cached locally for 0-second download wait time.</small>
+            <small class="hint" id="modelHint">Models are cached locally for zero download wait time.</small>
           </div>
 
           <!-- Spoken Language -->
@@ -195,7 +231,7 @@
               <option value="full" selected>100% Full Video Scan (Zero Missed Speech - Recommended)</option>
               <option value="vad">Smart VAD Filter (Ultra-Sensitive Silence Removal)</option>
             </select>
-            <small class="hint">Guarantees every second from start to finish is transcribed, including closing dialogue.</small>
+            <small class="hint">Guarantees every second is transcribed, including closing dialogue.</small>
           </div>
         </div>
 
@@ -205,7 +241,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
-            Generate Subtitles (.SRT)
+            <span id="generateBtnText">Generate Subtitles (.SRT)</span>
           </button>
         </div>
       </section>
@@ -213,8 +249,9 @@
       <!-- 2. Processing & Queue Section -->
       <section class="card hidden" id="progressSection">
         <div class="card-header">
-          <div style="display:flex; align-items:center; gap: 10px;">
+          <div style="display:flex; align-items:center; gap: 10px; flex-wrap:wrap;">
             <h2>2. Processing On GPU</h2>
+            <span id="batchProgressPill" class="badge badge-primary hidden">Video 1 of 1</span>
             <span id="queueStatusPill" class="badge badge-queue hidden">Queue Position #1</span>
             <span id="speedupPill" class="badge badge-turbo hidden">⚡ 170x Speedup</span>
           </div>
@@ -230,7 +267,11 @@
 
         <div class="status-status-row">
           <p id="statusMessage" class="status-msg">Rust Gateway queueing task on GPU worker...</p>
-          <span id="elapsedTimer" class="timer-pill">00:00</span>
+          <div class="timer-group">
+            <span id="accurateProgressPill" class="timer-pill highlight">00:00 / 00:00 (0%)</span>
+            <span id="etaTimerPill" class="timer-pill">ETA: --:--</span>
+            <span id="elapsedTimer" class="timer-pill">Elapsed: 00:00</span>
+          </div>
         </div>
 
         <div class="log-stream-box" id="logStreamBox">
@@ -242,12 +283,12 @@
         </div>
       </section>
 
-      <!-- 3. Subtitle Studio & Editor Workspace (Full-Width, No Video Player) -->
+      <!-- 3. Subtitle Studio & Interactive Video Editor Workspace -->
       <section class="card hidden" id="resultsSection">
         <div class="card-header results-header">
           <div>
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-              <h2>3. Subtitle Studio Workspace</h2>
+              <h2>3. Subtitle Studio & Video Editor</h2>
               <span class="badge badge-emerald" id="readyBadge">Ready for Export</span>
             </div>
             <div class="studio-stats-row" id="studioStatsRow">
@@ -257,7 +298,6 @@
               <span class="stat-pill" id="statDuration">⏱️ 0.0s</span>
               <span class="stat-pill highlight" id="statSpeed">⚡ 170x Acceleration</span>
               <span class="stat-pill highlight" id="statNoise">🎙️ Denoised: Studio Clarity</span>
-              <span class="stat-pill auto-purge" id="statPurge">🗑️ Video Purged (0B Disk Waste)</span>
             </div>
           </div>
           <div class="download-group">
@@ -279,47 +319,96 @@
               </svg>
               Clean Audio (.MP3)
             </button>
-            <button id="copyAllBtn" class="btn btn-secondary">
+            <button id="saveEditsBtn" class="btn btn-primary">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                <polyline points="7 3 7 8 15 8"></polyline>
               </svg>
-              Copy All
-            </button>
-            <button id="exportEditedSrtBtn" class="btn btn-primary">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg-sm">
-                <path d="M12 20h9"></path>
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-              </svg>
-              Export Edited .SRT
+              Save & Export .SRT
             </button>
           </div>
         </div>
 
-        <!-- Full-Width Studio Toolbar: Search + Timing Offset Shifter -->
-        <div class="studio-toolbar">
-          <div class="search-box">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
-              <circle cx="11" cy="11" r="8"></circle>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-            </svg>
-            <input type="text" id="subtitleSearchInput" placeholder="Filter subtitles by keyword, phrase, or timestamp..." autocomplete="off">
-            <span id="searchMatchCount" class="badge badge-primary hidden">0 matches</span>
+        <!-- Studio Workspace Grid: Side-by-Side Video Preview & Subtitle Editor -->
+        <div class="studio-workspace-grid">
+          <!-- Left Column: Video Player Preview with Active Subtitle Overlay -->
+          <div class="video-preview-column">
+            <div class="video-player-wrapper">
+              <video id="studioVideoPlayer" controls playsinline preload="metadata"></video>
+              <div id="videoSubtitleOverlay" class="video-subtitle-overlay hidden">
+                <span id="overlaySubtitleText">Subtitle preview will appear here...</span>
+              </div>
+            </div>
+            <!-- Video Control Bar -->
+            <div class="video-playback-controls">
+              <button type="button" class="btn-tool" id="videoSkipBackBtn" title="Rewind 5 seconds">⏪ -5s</button>
+              <button type="button" class="btn-tool" id="videoPlayPauseBtn" title="Toggle Play / Pause">⏯️ Play</button>
+              <button type="button" class="btn-tool" id="videoSkipFwdBtn" title="Fast forward 5 seconds">⏩ +5s</button>
+              <div class="speed-selector-group">
+                <span class="speed-label">Speed:</span>
+                <select id="videoSpeedSelect" class="form-select form-select-sm" style="width: auto; padding: 2px 8px;">
+                  <option value="0.5">0.5x</option>
+                  <option value="0.75">0.75x</option>
+                  <option value="1.0" selected>1.0x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="2.0">2.0x</option>
+                </select>
+              </div>
+              <button type="button" class="btn-tool active" id="toggleSubtitleOverlayBtn" title="Toggle subtitle overlay on video">💬 Overlay ON</button>
+            </div>
+            <div class="video-meta-hint">
+              <span>💡 <strong>Tip:</strong> Click any subtitle row or timestamp to instantly seek the video to that moment. Edit typos directly in the table.</span>
+            </div>
           </div>
 
-          <!-- Time Offset Sync Shifter -->
-          <div class="time-shift-controls">
-            <span class="tool-label">Sync Offset:</span>
-            <button type="button" class="btn-tool" id="shiftBackBtn" title="Shift all subtitles earlier by 0.5s">⏪ -0.5s</button>
-            <span class="offset-display" id="offsetDisplay">0.0s</span>
-            <button type="button" class="btn-tool" id="shiftFwdBtn" title="Shift all subtitles later by 0.5s">⏩ +0.5s</button>
-            <button type="button" class="btn-tool" id="resetShiftBtn" title="Reset timing shift">↺ Reset</button>
-          </div>
-        </div>
+          <!-- Right Column: Interactive Subtitle Editor Table -->
+          <div class="subtitle-editor-column">
+            <div class="studio-toolbar">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="subtitleSearchInput" placeholder="Filter subtitles by keyword or timestamp..." autocomplete="off">
+                <span id="searchMatchCount" class="badge badge-primary hidden">0 matches</span>
+              </div>
 
-        <!-- Full-Width Subtitle Timeline Container -->
-        <div class="full-width-timeline" id="timelineList">
-          <!-- Dynamically populated subtitle segment cards -->
+              <!-- Time Offset Sync Shifter -->
+              <div class="time-shift-controls">
+                <span class="tool-label">Sync Offset:</span>
+                <button type="button" class="btn-tool" id="shiftBackBtn" title="Shift all subtitles earlier by 0.5s">⏪ -0.5s</button>
+                <span class="offset-display" id="offsetDisplay">0.0s</span>
+                <button type="button" class="btn-tool" id="shiftFwdBtn" title="Shift all subtitles later by 0.5s">⏩ +0.5s</button>
+                <button type="button" class="btn-tool" id="resetShiftBtn" title="Reset timing shift">↺ Reset</button>
+              </div>
+            </div>
+
+            <!-- Subtoolbar with Add Cue and Auto-Save Status -->
+            <div class="editor-subtoolbar">
+              <button type="button" class="btn btn-secondary btn-sm" id="addCueBtn">➕ Add Subtitle Line</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="copyAllBtn">📋 Copy All Text</button>
+              <span id="saveStatusBadge" class="save-indicator">✓ Auto-Sync Active</span>
+            </div>
+
+            <!-- Subtitle Table -->
+            <div class="studio-editor-table-container" id="editorTableContainer">
+              <table class="subtitle-table" id="subtitleTable">
+                <thead>
+                  <tr>
+                    <th style="width: 44px; text-align: center;">#</th>
+                    <th style="width: 150px;">Timing (Start - End)</th>
+                    <th>Subtitle Text</th>
+                    <th style="width: 80px; text-align: center;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="subtitleTableBody">
+                  <!-- Dynamically populated cue rows -->
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 

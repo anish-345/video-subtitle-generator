@@ -35,6 +35,7 @@ Copy-Item (Join-Path $ProjectRoot "requirements.txt") (Join-Path $PackageDir "re
 Copy-Item (Join-Path $ProjectRoot "README.md") (Join-Path $PackageDir "README.md")
 Copy-Item (Join-Path $ProjectRoot "start.bat") (Join-Path $PackageDir "start.bat")
 Copy-Item (Join-Path $ProjectRoot "setup_and_run.bat") (Join-Path $PackageDir "setup_and_run.bat")
+Copy-Item (Join-Path $ProjectRoot "setup_cuda.bat") (Join-Path $PackageDir "setup_cuda.bat")
 Copy-Item (Join-Path $ProjectRoot "run.ps1") (Join-Path $PackageDir "run.ps1")
 
 # Clean __pycache__ from package

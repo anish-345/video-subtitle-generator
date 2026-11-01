@@ -49,6 +49,7 @@ jobs:
           Copy-Item README.md package\README.md
           Copy-Item start.bat package\start.bat
           Copy-Item setup_and_run.bat package\setup_and_run.bat
+          Copy-Item setup_cuda.bat package\setup_cuda.bat
           Copy-Item run.ps1 package\run.ps1
 
           # Ensure data directories exist

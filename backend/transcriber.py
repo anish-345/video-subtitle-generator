@@ -26,21 +26,55 @@ def setup_cuda_dll_paths():
     except Exception:
         pass
 
-    # 2. Inspect active environment site-packages
-    candidate_dirs.append(Path(sys.prefix) / "Lib" / "site-packages" / "sherpa_onnx" / "lib")
-    candidate_dirs.append(Path(__file__).resolve().parent.parent / ".venv" / "Lib" / "site-packages" / "sherpa_onnx" / "lib")
+    # 2. Inspect active environment and parent site-packages
+    base_prefixes = [
+        Path(sys.prefix),
+        Path(__file__).resolve().parent.parent / ".venv",
+        Path(__file__).resolve().parent.parent / "package" / "python",
+    ]
+    for bp in base_prefixes:
+        for sp in [bp / "Lib" / "site-packages", bp / "site-packages"]:
+            if sp.exists():
+                nvidia_dir = sp / "nvidia"
+                if nvidia_dir.exists():
+                    try:
+                        for sub in nvidia_dir.iterdir():
+                            bin_dir = sub / "bin"
+                            if bin_dir.exists():
+                                candidate_dirs.append(bin_dir)
+                    except Exception:
+                        pass
+                candidate_dirs.append(sp / "sherpa_onnx" / "lib")
+                candidate_dirs.append(sp / "torch" / "lib")
+                candidate_dirs.append(sp / "ctranslate2")
 
+    # 3. Inspect system CUDA_PATH
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        cp = Path(cuda_path)
+        candidate_dirs.append(cp / "bin")
+        candidate_dirs.append(cp / "libnvvp")
+
+    # 4. Project local directories
+    proj_root = Path(__file__).resolve().parent.parent
+    candidate_dirs.append(proj_root / "bin")
+    candidate_dirs.append(proj_root / "cudnn" / "bin")
+
+    registered = set()
     for lib_dir in candidate_dirs:
-        if lib_dir.exists():
-            if hasattr(os, "add_dll_directory"):
-                try:
-                    os.add_dll_directory(str(lib_dir.resolve()))
-                except Exception:
-                    pass
-            p_str = str(lib_dir.resolve())
-            if p_str not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = p_str + os.pathsep + os.environ.get("PATH", "")
-            break
+        try:
+            if lib_dir.exists() and lib_dir not in registered:
+                registered.add(lib_dir)
+                resolved = str(lib_dir.resolve())
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        os.add_dll_directory(resolved)
+                    except Exception:
+                        pass
+                if resolved not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = resolved + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
 
 setup_cuda_dll_paths()
 
@@ -67,6 +101,17 @@ def format_timestamp_vtt(seconds: float) -> str:
     mins = total_mins % 60
     hours = total_mins // 60
     return f"{hours:02d}:{mins:02d}:{secs:02d}.{millis:03d}"
+
+def format_time_min_sec(seconds: float) -> str:
+    """Convert float seconds to human-readable MM:SS or HH:MM:SS format."""
+    total_secs = max(0, int(round(seconds)))
+    mins = total_secs // 60
+    secs = total_secs % 60
+    hours = mins // 60
+    if hours > 0:
+        mins = mins % 60
+        return f"{hours:02d}:{mins:02d}:{secs:02d}"
+    return f"{mins:02d}:{secs:02d}"
 
 def get_audio_duration(file_path: str | Path) -> float:
     """Get duration of media file in seconds using ffprobe JSON, with fallback to ffmpeg."""
@@ -296,19 +341,13 @@ def get_gpu_info() -> Dict[str, Any]:
     """Inspect GPU availability and details."""
     gpu_info = {
         "cuda_available": False,
+        "has_nvidia_gpu": False,
         "device_name": "CPU",
         "vram_gb": 0.0,
-        "recommended_compute": "int8"
+        "recommended_compute": "int8",
+        "cuda_setup_needed": False,
+        "cuda_message": "Running on CPU (Multi-Threaded)"
     }
-
-    try:
-        import ctranslate2
-        cuda_count = ctranslate2.get_cuda_device_count()
-        if cuda_count > 0:
-            gpu_info["cuda_available"] = True
-            gpu_info["recommended_compute"] = "float16"
-    except Exception:
-        pass
 
     try:
         cmd = ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]
@@ -317,11 +356,25 @@ def get_gpu_info() -> Dict[str, Any]:
             line = res.stdout.strip().splitlines()[0]
             parts = line.split(",")
             if len(parts) >= 2:
+                gpu_info["has_nvidia_gpu"] = True
                 gpu_info["device_name"] = parts[0].strip()
                 gpu_info["vram_gb"] = round(float(parts[1].strip()) / 1024.0, 1)
-                gpu_info["cuda_available"] = True
     except Exception:
         pass
+
+    try:
+        import ctranslate2
+        cuda_count = ctranslate2.get_cuda_device_count()
+        if cuda_count > 0:
+            gpu_info["cuda_available"] = True
+            gpu_info["recommended_compute"] = "float16"
+            gpu_info["cuda_message"] = f"🚀 NVIDIA CUDA Accelerated ({gpu_info['device_name']})"
+    except Exception:
+        pass
+
+    if gpu_info["has_nvidia_gpu"] and not gpu_info["cuda_available"]:
+        gpu_info["cuda_setup_needed"] = True
+        gpu_info["cuda_message"] = f"⚠️ {gpu_info['device_name']} detected! CUDA cuDNN libraries needed for acceleration."
 
     return gpu_info
 
@@ -540,7 +593,7 @@ class WhisperService:
         task: str = "transcribe",
         turbo_mode: bool = True,
         batch_size: Optional[int] = None,
-        delete_video_after: bool = True,
+        delete_video_after: bool = False,
         vad_filter: bool = False,
         noise_reduction: str = "studio",
         original_filename: Optional[str] = None,
@@ -679,18 +732,31 @@ class WhisperService:
                     speedup_factor = round(last_end_time / elapsed_time, 1)
 
                     if total_duration > 0:
-                        pct = min(96, int(25 + (last_end_time / total_duration) * 70))
+                        exact_pct = round(min(100.0, max(0.0, (last_end_time / total_duration) * 100.0)), 1)
+                        remaining_audio = max(0.0, total_duration - last_end_time)
+                        eta_sec = round(remaining_audio / max(0.1, speedup_factor), 1)
                     else:
-                        pct = min(96, 25 + seg_index * 2)
+                        exact_pct = min(98.0, round(seg_index * 2.0, 1))
+                        eta_sec = 0.0
+
+                    curr_fmt = format_time_min_sec(last_end_time)
+                    total_fmt = format_time_min_sec(total_duration)
+                    eta_fmt = format_time_min_sec(eta_sec)
 
                     start_fmt_srt = format_timestamp_srt(start_val)
                     end_fmt_srt = format_timestamp_srt(end_val)
-                    msg = f"⚡ Transcribing ({speedup_factor}x Speed): #{seg_index} ({start_fmt_srt} -> {end_fmt_srt}): {text[:45]}"
+                    msg = f"⚡ Transcribing: {curr_fmt} / {total_fmt} ({exact_pct}%) • {speedup_factor}x Speed • ETA ~{eta_fmt}"
 
                     if progress_callback:
                         progress_callback({
                             "step": "transcribing",
-                            "progress": pct,
+                            "progress": exact_pct,
+                            "current_time": round(last_end_time, 3),
+                            "total_duration": round(total_duration, 3),
+                            "current_time_fmt": curr_fmt,
+                            "total_duration_fmt": total_fmt,
+                            "eta_seconds": eta_sec,
+                            "eta_fmt": eta_fmt,
                             "turbo_mode": turbo_mode,
                             "speedup_factor": speedup_factor,
                             "message": msg,
@@ -952,7 +1018,7 @@ class SenseVoiceService:
         task: str = "transcribe",
         turbo_mode: bool = True,
         batch_size: Optional[int] = None,
-        delete_video_after: bool = True,
+        delete_video_after: bool = False,
         vad_filter: bool = False,
         noise_reduction: str = "studio",
         original_filename: Optional[str] = None,
@@ -1096,20 +1162,40 @@ class SenseVoiceService:
 
                 # Live progress updates
                 elapsed = max(0.001, time.time() - transcribe_start_time)
-                pct = min(92, int(25 + (min(total_duration, offset) / max(0.1, total_duration)) * 65))
-                speedup_factor = round(min(total_duration, offset) / elapsed, 1)
+                cur_audio_pos = min(total_duration, offset)
+                speedup_factor = round(cur_audio_pos / elapsed, 1) if elapsed > 0 and cur_audio_pos > 0 else 1.0
+
+                if total_duration > 0:
+                    exact_pct = round(min(100.0, max(0.0, (cur_audio_pos / total_duration) * 100.0)), 1)
+                    remaining_audio = max(0.0, total_duration - cur_audio_pos)
+                    eta_sec = round(remaining_audio / max(0.1, speedup_factor), 1)
+                else:
+                    exact_pct = min(98.0, round(len(raw_cues) * 2.0, 1))
+                    eta_sec = 0.0
+
+                curr_fmt = format_time_min_sec(cur_audio_pos)
+                total_fmt = format_time_min_sec(total_duration)
+                eta_fmt = format_time_min_sec(eta_sec)
 
                 latest_txt = raw_cues[-1]["text"] if raw_cues else "Analyzing audio..."
                 latest_start = raw_cues[-1]["start"] if raw_cues else 0.0
                 latest_end = raw_cues[-1]["end"] if raw_cues else 0.0
 
+                msg = f"⚡ SenseVoice: {curr_fmt} / {total_fmt} ({exact_pct}%) • {speedup_factor}x Speed • ETA ~{eta_fmt}"
+
                 if progress_callback:
                     progress_callback({
                         "step": "transcribing",
-                        "progress": pct,
+                        "progress": exact_pct,
+                        "current_time": round(cur_audio_pos, 3),
+                        "total_duration": round(total_duration, 3),
+                        "current_time_fmt": curr_fmt,
+                        "total_duration_fmt": total_fmt,
+                        "eta_seconds": eta_sec,
+                        "eta_fmt": eta_fmt,
                         "turbo_mode": turbo_mode,
                         "speedup_factor": speedup_factor,
-                        "message": f"⚡ SenseVoice ({speedup_factor}x Speed): #{len(raw_cues)} ({format_timestamp_srt(latest_start)} -> {format_timestamp_srt(latest_end)}): {latest_txt[:45]}",
+                        "message": msg,
                         "latest_segment": {
                             "id": len(raw_cues),
                             "start": round(latest_start, 3),

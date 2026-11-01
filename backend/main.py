@@ -17,7 +17,8 @@ from backend.config import (
     BASE_DIR, UPLOADS_DIR, SUBTITLES_DIR, TEMP_DIR, OUTPUTS_DIR,
     FFMPEG_PATH, cleanup_file, purge_expired_temp_files, purge_expired_subtitles, purge_expired_outputs
 )
-from backend.transcriber import whisper_service, sensevoice_service, get_gpu_info, is_model_cached
+from backend.transcriber import whisper_service, sensevoice_service, get_gpu_info, is_model_cached, format_timestamp_srt, format_timestamp_vtt, setup_cuda_dll_paths
+from typing import List
 
 app = FastAPI(title="GPU Subtitle Worker API", version="1.1.0")
 
@@ -161,7 +162,7 @@ def process_transcription_job(
     task: str,
     turbo_mode: bool = True,
     batch_size: Optional[int] = None,
-    delete_video_after: bool = True,
+    delete_video_after: bool = False,
     vad_filter: bool = False,
     noise_reduction: str = "studio"
 ):
@@ -238,7 +239,7 @@ class TranscribePathRequest(BaseModel):
     task: str = "transcribe"
     turbo_mode: bool = True
     batch_size: Optional[int] = None
-    delete_video_after: bool = True
+    delete_video_after: bool = False
     vad_filter: bool = False
     noise_reduction: str = "studio"
 
@@ -346,7 +347,7 @@ async def create_transcription_job(
     task: str = Form("transcribe"),
     turbo_mode: bool = Form(True),
     batch_size: Optional[int] = Form(None),
-    delete_video_after: bool = Form(True),
+    delete_video_after: bool = Form(False),
     vad_filter: bool = Form(False),
     noise_reduction: str = Form("studio"),
     background_tasks: BackgroundTasks = None
@@ -604,6 +605,112 @@ def cleanup_job(job_id: str, delete_video: bool = True):
         "cleaned_items": cleaned_items
     }
 
+
+class UpdateSubtitlesRequest(BaseModel):
+    segments: List[Dict[str, Any]]
+
+@app.post("/api/jobs/{job_id}/subtitles/update")
+def update_job_subtitles(job_id: str, req: UpdateSubtitlesRequest):
+    """Save user edits from in-browser subtitle editor back to disk files."""
+    srt_lines = []
+    vtt_lines = ["WEBVTT", ""]
+    txt_lines = []
+    
+    for idx, seg in enumerate(req.segments, start=1):
+        s_val = float(seg.get("start", 0.0))
+        e_val = float(seg.get("end", s_val + 0.5))
+        s_srt = format_timestamp_srt(s_val)
+        e_srt = format_timestamp_srt(e_val)
+        s_vtt = format_timestamp_vtt(s_val)
+        e_vtt = format_timestamp_vtt(e_val)
+        txt = str(seg.get("text", "")).strip()
+
+        srt_lines.extend([f"{idx}", f"{s_srt} --> {e_srt}", txt, ""])
+        vtt_lines.extend([f"{idx}", f"{s_vtt} --> {e_vtt}", txt, ""])
+        txt_lines.append(f"[{s_srt}] {txt}")
+
+    (SUBTITLES_DIR / f"{job_id}.srt").write_text("\n".join(srt_lines), encoding="utf-8")
+    (SUBTITLES_DIR / f"{job_id}.vtt").write_text("\n".join(vtt_lines), encoding="utf-8")
+    (SUBTITLES_DIR / f"{job_id}.txt").write_text("\n".join(txt_lines), encoding="utf-8")
+
+    if job_id in JOBS and JOBS[job_id].get("result"):
+        JOBS[job_id]["result"]["segments"] = req.segments
+
+    return {"status": "updated", "cues_count": len(req.segments)}
+
+class BatchExportRequest(BaseModel):
+    job_ids: List[str]
+
+@app.post("/api/batch/export-zip")
+def export_batch_zip(req: BatchExportRequest):
+    """Export multiple completed subtitle jobs into a single downloadable .ZIP archive."""
+    import zipfile
+    import io
+    from fastapi.responses import Response
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for jid in req.job_ids:
+            meta_file = SUBTITLES_DIR / f"{jid}.meta.json"
+            orig_name = f"subtitles_{jid}"
+            if meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                    orig_name = Path(meta.get("filename", orig_name)).stem
+                except Exception:
+                    pass
+            for ext in ["srt", "vtt", "txt"]:
+                fpath = SUBTITLES_DIR / f"{jid}.{ext}"
+                if fpath.exists():
+                    zf.write(fpath, arcname=f"{orig_name}.{ext}")
+
+    zip_buffer.seek(0)
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=whisper_batch_subtitles.zip"}
+    )
+
+@app.get("/api/cuda/status")
+def get_cuda_status():
+    """Inspect CUDA GPU hardware and acceleration status."""
+    gpu = get_gpu_info()
+    return {
+        "has_nvidia_gpu": gpu.get("has_nvidia_gpu", False),
+        "cuda_available": gpu.get("cuda_available", False),
+        "device_name": gpu.get("device_name", "CPU"),
+        "vram_gb": gpu.get("vram_gb", 0.0),
+        "cuda_setup_needed": gpu.get("cuda_setup_needed", False),
+        "message": gpu.get("cuda_message", "")
+    }
+
+@app.post("/api/cuda/enable")
+def enable_cuda():
+    """1-Click CUDA acceleration setup: installs nvidia-cublas and nvidia-cudnn wheels."""
+    import sys
+    import subprocess
+    gpu = get_gpu_info()
+    if not gpu.get("has_nvidia_gpu"):
+        return {"status": "no_gpu", "message": "No physical NVIDIA GPU detected on this system."}
+    if gpu.get("cuda_available"):
+        return {"status": "ready", "message": f"NVIDIA CUDA is already active ({gpu.get('device_name')})!"}
+
+    try:
+        py_exe = sys.executable
+        cmd = [py_exe, "-m", "pip", "install", "nvidia-cublas-cu12", "nvidia-cudnn-cu12", "--no-warn-script-location"]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+        setup_cuda_dll_paths()
+        updated = get_gpu_info()
+        return {
+            "status": "installed" if updated.get("cuda_available") else "restart_needed",
+            "cuda_available": updated.get("cuda_available"),
+            "message": "NVIDIA CUDA cuDNN libraries installed successfully! GPU is accelerated." if updated.get("cuda_available") else "Packages installed. Please restart Whisper Studio to activate GPU acceleration.",
+            "device_name": updated.get("device_name")
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Installation failed: {str(e)}"}
+
 FRONTEND_DIR = BASE_DIR / "frontend"
+
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
