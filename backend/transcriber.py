@@ -407,10 +407,14 @@ def extract_audio_ffmpeg(
     total_duration: float = 0.0
 ) -> bool:
     """Extract audio stream from video to 16kHz mono WAV at maximum speed with live progress."""
+    cpu_cores = max(4, min(16, (os.cpu_count() or 8)))
     cmd = [
         FFMPEG_PATH,
         "-y",
-        "-threads", "0",
+        "-threads", str(cpu_cores),
+        "-filter_threads", str(cpu_cores),
+        "-filter_complex_threads", str(cpu_cores),
+        "-thread_queue_size", "2048",
         "-i", str(input_video_path),
         "-vn", "-sn", "-dn"
     ]
@@ -596,9 +600,27 @@ class WhisperService:
                     "message": f"Loading cached Whisper '{model_size}' model into RTX 3050 GPU VRAM..."
                 })
 
-        print(f"[WhisperService] Loading model '{model_size}' on {device.upper()} (compute_type={compute_type})...")
+        # Target up to 4GB VRAM allocation and maximum core parallelism
+        cpu_threads = max(4, min(16, (os.cpu_count() or 8)))
+        if device == "cuda":
+            if model_size in ["tiny", "base"]:
+                num_workers = 3  # 3 parallel execution workers in VRAM
+            elif model_size in ["small"]:
+                num_workers = 2  # 2 parallel execution workers in VRAM
+            else:
+                num_workers = 1  # 1 for large models to stay within 4.5GB VRAM
+        else:
+            num_workers = 2
+
+        print(f"[WhisperService] Loading model '{model_size}' on {device.upper()} (compute={compute_type}, workers={num_workers}, cpu_threads={cpu_threads})...")
         try:
-            model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            model = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=compute_type,
+                num_workers=num_workers,
+                cpu_threads=cpu_threads
+            )
         except Exception as e:
             if device == "cuda":
                 print(f"[WhisperService] CUDA init failed ({e}), falling back to CPU...")
@@ -607,7 +629,7 @@ class WhisperService:
                 cache_key = f"{model_size}_{device}_{compute_type}"
                 if cache_key in self._loaded_models:
                     return self._loaded_models[cache_key], device, compute_type
-                model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                model = WhisperModel(model_size, device="cpu", compute_type="int8", num_workers=2, cpu_threads=cpu_threads)
             else:
                 raise e
 
@@ -686,8 +708,11 @@ class WhisperService:
                     # Non-blocking async encoding from already-filtered WAV directly to MP3 (instant, zero GPU wait!)
                     def _bg_encode_clean(src_wav, dst_mp3):
                         try:
+                            cpu_cores = max(4, min(16, (os.cpu_count() or 8)))
                             cmd_clean = [
-                                FFMPEG_PATH, "-y", "-threads", "0",
+                                FFMPEG_PATH, "-y",
+                                "-threads", str(cpu_cores),
+                                "-filter_threads", str(cpu_cores),
                                 "-i", str(src_wav),
                                 "-c:a", "libmp3lame", "-b:a", "128k",
                                 str(dst_mp3)
@@ -739,10 +764,18 @@ class WhisperService:
                 speech_pad_ms=500
             )
 
-            # High-Performance GPU Batched Inference (maximizes RTX 3050 CUDA cores)
+            # High-Performance GPU Batched Inference (target up to 4GB VRAM)
             if turbo_mode and active_device == "cuda":
                 from faster_whisper import BatchedInferencePipeline
-                effective_batch = batch_size if (batch_size and batch_size > 1) else 16
+                if batch_size is None or batch_size <= 1:
+                    if model_size in ["tiny", "base"]:
+                        effective_batch = 32  # Large batch size to utilize ~3-4GB VRAM & saturate CUDA
+                    elif model_size in ["small"]:
+                        effective_batch = 24
+                    else:
+                        effective_batch = 16
+                else:
+                    effective_batch = batch_size
                 pipeline = BatchedInferencePipeline(model=model)
                 segments, info = pipeline.transcribe(
                     str(extracted_audio),
@@ -1152,8 +1185,11 @@ class SenseVoiceService:
                     # Non-blocking async encoding from already-filtered WAV directly to MP3 (instant, zero GPU wait!)
                     def _bg_encode_clean(src_wav, dst_mp3):
                         try:
+                            cpu_cores = max(4, min(16, (os.cpu_count() or 8)))
                             cmd_clean = [
-                                FFMPEG_PATH, "-y", "-threads", "0",
+                                FFMPEG_PATH, "-y",
+                                "-threads", str(cpu_cores),
+                                "-filter_threads", str(cpu_cores),
                                 "-i", str(src_wav),
                                 "-c:a", "libmp3lame", "-b:a", "128k",
                                 str(dst_mp3)
