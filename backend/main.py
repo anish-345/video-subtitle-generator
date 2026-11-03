@@ -1,3 +1,4 @@
+import re
 import asyncio
 import os
 import shutil
@@ -151,7 +152,8 @@ def get_system_status():
             "ten_hour_eta": "3.5 - 5 minutes",
             "recommended_batch_size": 16
         },
-        "available_models": models
+        "available_models": models,
+        "queued_count": sum(1 for j in JOBS.values() if j.get("status") in ("processing", "queued"))
     }
 
 def process_transcription_job(
@@ -479,35 +481,147 @@ async def stream_job_progress(job_id: str):
 
     return EventSourceResponse(event_generator())
 
+def parse_srt_to_segments(srt_content: str) -> List[Dict[str, Any]]:
+    """Parse SRT text back into segment list with millisecond accuracy."""
+    segments = []
+    blocks = re.split(r'\n\s*\n', srt_content.strip())
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if len(lines) >= 3:
+            try:
+                cue_id = int(lines[0])
+                timing = lines[1]
+                text = " ".join(lines[2:])
+                if "-->" in timing:
+                    parts = timing.split("-->")
+                    s_str = parts[0].strip()
+                    e_str = parts[1].strip()
+                    def srt_to_sec(t_str):
+                        h, m, sm = t_str.split(":")
+                        s, ms = sm.split(",")
+                        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+                    s_sec = round(srt_to_sec(s_str), 3)
+                    e_sec = round(srt_to_sec(e_str), 3)
+                    segments.append({
+                        "id": cue_id,
+                        "start": s_sec,
+                        "end": e_sec,
+                        "start_fmt": s_str,
+                        "end_fmt": e_str,
+                        "text": text
+                    })
+            except Exception:
+                continue
+    return segments
+
+@app.get("/api/jobs")
+def list_all_jobs():
+    """List active in-flight jobs and persistent completed jobs from disk."""
+    job_list = []
+    seen_ids = set()
+
+    # 1. In-memory active/recent jobs
+    for jid, j in list(JOBS.items()):
+        seen_ids.add(jid)
+        job_list.append({
+            "job_id": jid,
+            "filename": j.get("filename", "video"),
+            "status": j.get("status", "queued"),
+            "progress": j.get("progress", 0),
+            "message": j.get("message", ""),
+            "created_at": j.get("created_at", time.time()),
+            "total_duration": j.get("result", {}).get("total_duration", 0.0) if j.get("result") else 0.0,
+            "detected_language": j.get("result", {}).get("detected_language") if j.get("result") else None,
+            "has_subtitles": (SUBTITLES_DIR / f"{jid}.srt").exists()
+        })
+
+    # 2. Completed jobs stored on disk
+    for meta_path in SUBTITLES_DIR.glob("*.meta.json"):
+        jid = meta_path.name.replace(".meta.json", "")
+        if jid not in seen_ids:
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                job_list.append({
+                    "job_id": jid,
+                    "filename": meta.get("filename", f"subtitles_{jid}"),
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Subtitles generated successfully",
+                    "created_at": meta.get("created_at", meta_path.stat().st_mtime),
+                    "total_duration": meta.get("total_duration", 0.0),
+                    "detected_language": meta.get("detected_language"),
+                    "has_subtitles": (SUBTITLES_DIR / f"{jid}.srt").exists()
+                })
+            except Exception:
+                pass
+
+    job_list.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    return {
+        "jobs": job_list,
+        "active_count": sum(1 for j in job_list if j.get("status") in ("processing", "queued")),
+        "completed_count": sum(1 for j in job_list if j.get("status") == "completed")
+    }
+
 @app.get("/api/jobs/{job_id}/status")
 def get_job_status(job_id: str):
-    if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job = JOBS[job_id]
-    return {
-        "id": job_id,
-        "status": job["status"],
-        "progress": job["progress"],
-        "message": job["message"],
-        "filename": job["filename"],
-        "video_url": f"/api/jobs/{job_id}/video",
-        "result": job.get("result"),
-        "error": job.get("error")
-    }
+    if job_id in JOBS:
+        job = JOBS[job_id]
+        return {
+            "id": job_id,
+            "status": job["status"],
+            "progress": job["progress"],
+            "message": job["message"],
+            "filename": job["filename"],
+            "video_url": f"/api/jobs/{job_id}/video",
+            "result": job.get("result"),
+            "error": job.get("error")
+        }
+
+    # Disk Fallback: reconstruct from persistent storage
+    meta_file = SUBTITLES_DIR / f"{job_id}.meta.json"
+    srt_file = SUBTITLES_DIR / f"{job_id}.srt"
+    if meta_file.exists() and srt_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            segments = parse_srt_to_segments(srt_file.read_text(encoding="utf-8"))
+            return {
+                "id": job_id,
+                "status": "completed",
+                "progress": 100,
+                "message": "Subtitles loaded from disk",
+                "filename": meta.get("filename", f"subtitles_{job_id}"),
+                "video_url": f"/api/jobs/{job_id}/video",
+                "result": {
+                    "job_id": job_id,
+                    "filename": meta.get("filename", f"subtitles_{job_id}"),
+                    "status": "completed",
+                    "total_duration": meta.get("total_duration", 0.0),
+                    "detected_language": meta.get("detected_language", "auto"),
+                    "segments": segments,
+                    "srt_file": str(srt_file),
+                    "vtt_file": str(SUBTITLES_DIR / f"{job_id}.vtt"),
+                    "txt_file": str(SUBTITLES_DIR / f"{job_id}.txt")
+                },
+                "error": None
+            }
+        except Exception as e:
+            print(f"[Disk fallback error] {e}")
+
+    raise HTTPException(status_code=404, detail="Job not found")
 
 @app.get("/api/jobs/{job_id}/video")
 def get_job_video(job_id: str):
-    if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
-    video_path = Path(JOBS[job_id]["video_path"])
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found or already purged")
-    
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        filename=video_path.name
-    )
+    if job_id in JOBS:
+        video_path = Path(JOBS[job_id]["video_path"])
+        if video_path.exists():
+            return FileResponse(video_path, media_type="video/mp4", filename=video_path.name)
+
+    # Check uploads directory for any file starting with job_id
+    for p in UPLOADS_DIR.glob(f"{job_id}_*"):
+        if p.exists():
+            return FileResponse(p, media_type="video/mp4", filename=p.name)
+
+    raise HTTPException(status_code=404, detail="Video file not found or already purged")
 
 @app.get("/api/jobs/{job_id}/subtitles/{ext}")
 def get_job_subtitles(job_id: str, ext: str):

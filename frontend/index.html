@@ -112,9 +112,21 @@
               <span class="tag">Batch 5-10+ Files</span>
             </div>
           </div>
+
+          <!-- Single File Preview inside Dropzone -->
+          <div class="selected-file-info hidden" id="selectedFileInfo">
+            <div class="file-meta">
+              <span class="file-icon">🎬</span>
+              <div>
+                <strong id="singleFileName">video.mp4</strong>
+                <span id="singleFileSize">0 MB</span>
+              </div>
+            </div>
+            <button type="button" class="btn-icon" id="removeSingleFileBtn" title="Remove file">✕</button>
+          </div>
         </div>
 
-        <!-- Batch Queue Container (Visible when 1 or more files are selected) -->
+        <!-- Batch Queue Container (Visible when multiple files are selected) -->
         <div class="batch-queue-container hidden" id="batchQueueContainer">
           <div class="batch-queue-header">
             <div>
@@ -134,6 +146,26 @@
             <button type="button" class="btn btn-emerald btn-sm hidden" id="downloadBatchZipBtn">
               📦 Download All Subtitles (.ZIP)
             </button>
+          </div>
+        </div>
+
+        <!-- Server Tasks & Subtitle History Dashboard (Persistent across all users/devices) -->
+        <div class="tasks-dashboard-container" id="tasksDashboardContainer">
+          <div class="tasks-dashboard-header">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="tasks-header-icon">📋</span>
+              <div>
+                <h3>Server Tasks & Subtitle History</h3>
+                <span class="hint" id="serverTasksHint">Live queued & completed tasks on server (<span id="serverTasksCount">0</span> total)</span>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="badge badge-queue" id="activeTasksBadge">0 Active</span>
+              <button type="button" class="btn btn-secondary btn-sm" id="refreshTasksBtn" title="Refresh task list">🔄 Refresh</button>
+            </div>
+          </div>
+          <div class="tasks-list" id="tasksList">
+            <div class="tasks-empty-hint">Loading server tasks...</div>
           </div>
         </div>
 

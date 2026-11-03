@@ -39,6 +39,18 @@ const installCudaBtnText = document.getElementById("installCudaBtnText");
 const dropzone = document.getElementById("dropzone");
 const videoFileInput = document.getElementById("videoFileInput");
 const dropzonePrompt = document.getElementById("dropzonePrompt");
+const selectedFileInfo = document.getElementById("selectedFileInfo");
+const singleFileName = document.getElementById("singleFileName");
+const singleFileSize = document.getElementById("singleFileSize");
+const removeSingleFileBtn = document.getElementById("removeSingleFileBtn");
+
+// Server Tasks & Subtitle History Elements
+const tasksDashboardContainer = document.getElementById("tasksDashboardContainer");
+const serverTasksHint = document.getElementById("serverTasksHint");
+const serverTasksCount = document.getElementById("serverTasksCount");
+const activeTasksBadge = document.getElementById("activeTasksBadge");
+const refreshTasksBtn = document.getElementById("refreshTasksBtn");
+const tasksList = document.getElementById("tasksList");
 
 const batchQueueContainer = document.getElementById("batchQueueContainer");
 const batchCountBadge = document.getElementById("batchCountBadge");
@@ -138,13 +150,14 @@ async function initSystemStatus() {
       };
     }
 
-    // Rust Core Metrics
-    if (data.rust_core) {
-      const q = data.rust_core.queued_jobs || 0;
-      if (queueBadge) queueBadge.textContent = `${q} in Queue`;
-      if (turboBadgeText) {
-        turboBadgeText.textContent = data.rust_core.turbo_ready ? "170x Speed (10h in ~4m)" : "Queue Balanced";
-      }
+    // Rust Core Metrics & Queue Counter
+    const effectiveQueued = (data.rust_core && data.rust_core.queued_jobs !== undefined)
+      ? data.rust_core.queued_jobs
+      : (data.queued_count || 0);
+    if (queueBadge) queueBadge.textContent = `${effectiveQueued} in Queue`;
+
+    if (data.rust_core && turboBadgeText) {
+      turboBadgeText.textContent = data.rust_core.turbo_ready ? "170x Speed (10h in ~4m)" : "Queue Balanced";
     }
 
     // GPU Metrics
@@ -272,6 +285,14 @@ function setupDropzone() {
     });
   }
 
+  if (removeSingleFileBtn) {
+    removeSingleFileBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetBatchQueue();
+    });
+  }
+
   if (addMoreFilesBtn) {
     addMoreFilesBtn.addEventListener("click", () => {
       if (videoFileInput) videoFileInput.click();
@@ -339,6 +360,8 @@ function resetBatchQueue() {
   isProcessingBatch = false;
   currentFile = null;
   if (videoFileInput) videoFileInput.value = "";
+  if (selectedFileInfo) selectedFileInfo.classList.add("hidden");
+  if (dropzonePrompt) dropzonePrompt.classList.remove("hidden");
   if (batchQueueContainer) batchQueueContainer.classList.add("hidden");
   if (generateBtn) {
     generateBtn.disabled = true;
@@ -347,74 +370,98 @@ function resetBatchQueue() {
 }
 
 function renderBatchQueueUI() {
-  if (!batchQueueContainer || !batchFileList) return;
-
   if (batchQueue.length === 0) {
-    batchQueueContainer.classList.add("hidden");
-    if (generateBtn) generateBtn.disabled = true;
+    if (selectedFileInfo) selectedFileInfo.classList.add("hidden");
+    if (dropzonePrompt) dropzonePrompt.classList.remove("hidden");
+    if (batchQueueContainer) batchQueueContainer.classList.add("hidden");
+    if (generateBtn) {
+      generateBtn.disabled = true;
+      if (generateBtnText) generateBtnText.textContent = "Generate Subtitles (.SRT)";
+    }
     return;
   }
 
-  batchQueueContainer.classList.remove("hidden");
+  // Single file selected -> Show clean single file card in dropzone
+  if (batchQueue.length === 1) {
+    if (dropzonePrompt) dropzonePrompt.classList.add("hidden");
+    if (batchQueueContainer) batchQueueContainer.classList.add("hidden");
+    if (selectedFileInfo) {
+      selectedFileInfo.classList.remove("hidden");
+      if (singleFileName) singleFileName.textContent = batchQueue[0].file.name;
+      if (singleFileSize) singleFileSize.textContent = formatBytes(batchQueue[0].file.size);
+    }
+    if (generateBtn) {
+      generateBtn.disabled = isProcessingBatch;
+      if (generateBtnText) {
+        generateBtnText.textContent = isProcessingBatch ? "Processing..." : "Generate Subtitles (.SRT)";
+      }
+    }
+    return;
+  }
+
+  // 2 or more files -> Show batch queue container
+  if (selectedFileInfo) selectedFileInfo.classList.add("hidden");
+  if (dropzonePrompt) dropzonePrompt.classList.add("hidden");
+  if (batchQueueContainer) batchQueueContainer.classList.remove("hidden");
 
   let totalBytes = 0;
   let completedCount = 0;
 
-  batchFileList.innerHTML = "";
-  batchQueue.forEach((item, idx) => {
-    totalBytes += item.file.size;
-    if (item.status === "completed") completedCount++;
+  if (batchFileList) {
+    batchFileList.innerHTML = "";
+    batchQueue.forEach((item, idx) => {
+      totalBytes += item.file.size;
+      if (item.status === "completed") completedCount++;
 
-    const card = document.createElement("div");
-    card.className = `batch-file-card ${item.status}`;
-    card.id = `item-${item.id}`;
+      const card = document.createElement("div");
+      card.className = `batch-file-card ${item.status}`;
+      card.id = `item-${item.id}`;
 
-    let statusPillHtml = '<span class="badge">Queued</span>';
-    if (item.status === "processing") {
-      statusPillHtml = `<span class="badge badge-turbo">⚡ Transcribing (${item.progress}%)</span>`;
-    } else if (item.status === "completed") {
-      statusPillHtml = '<span class="badge badge-emerald">✓ Completed</span>';
-    } else if (item.status === "failed") {
-      statusPillHtml = '<span class="badge" style="background:#fee2e2; color:#b91c1c;">✕ Error</span>';
-    }
+      let statusPillHtml = '<span class="badge">Queued</span>';
+      if (item.status === "processing") {
+        statusPillHtml = `<span class="badge badge-turbo">⚡ Transcribing (${item.progress}%)</span>`;
+      } else if (item.status === "completed") {
+        statusPillHtml = '<span class="badge badge-emerald">✓ Completed</span>';
+      } else if (item.status === "failed") {
+        statusPillHtml = '<span class="badge" style="background:#fee2e2; color:#b91c1c;">✕ Error</span>';
+      }
 
-    let actionBtnHtml = `
-      <button type="button" class="btn-icon-sm delete" title="Remove from queue" onclick="removeFileFromQueue(${idx})">✕</button>
-    `;
-    if (item.status === "completed" && item.result) {
-      actionBtnHtml = `
-        <button type="button" class="btn btn-secondary btn-sm" onclick="loadCompletedJobToStudio(${idx})">Open in Studio</button>
-        ${actionBtnHtml}
+      let actionBtnHtml = `
+        <button type="button" class="btn-icon-sm delete" title="Remove from queue" onclick="removeFileFromQueue(${idx})">✕</button>
       `;
-    }
+      if (item.status === "completed" && item.result) {
+        actionBtnHtml = `
+          <button type="button" class="btn btn-secondary btn-sm" onclick="loadCompletedJobToStudio(${idx})">Open in Studio</button>
+          ${actionBtnHtml}
+        `;
+      }
 
-    card.innerHTML = `
-      <div class="batch-file-left">
-        <span class="batch-file-icon">🎬</span>
-        <div>
-          <div class="batch-file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div>
-          <div class="batch-file-size">${formatBytes(item.file.size)}</div>
+      card.innerHTML = `
+        <div class="batch-file-left">
+          <span class="batch-file-icon">🎬</span>
+          <div>
+            <div class="batch-file-name" title="${escapeHtml(item.file.name)}">${escapeHtml(item.file.name)}</div>
+            <div class="batch-file-size">${formatBytes(item.file.size)}</div>
+          </div>
         </div>
-      </div>
-      <div class="batch-file-right">
-        ${statusPillHtml}
-        ${actionBtnHtml}
-      </div>
-    `;
-    batchFileList.appendChild(card);
-  });
+        <div class="batch-file-right">
+          ${statusPillHtml}
+          ${actionBtnHtml}
+        </div>
+      `;
+      batchFileList.appendChild(card);
+    });
+  }
 
-  if (batchCountBadge) batchCountBadge.textContent = `${batchQueue.length} file${batchQueue.length > 1 ? "s" : ""}`;
+  if (batchCountBadge) batchCountBadge.textContent = `${batchQueue.length} files`;
   if (batchSizeHint) batchSizeHint.textContent = `Total: ${formatBytes(totalBytes)}`;
 
   if (generateBtn) {
     generateBtn.disabled = isProcessingBatch;
     if (generateBtnText) {
-      if (batchQueue.length > 1) {
-        generateBtnText.textContent = `⚡ Process Batch (${batchQueue.length} Videos)`;
-      } else {
-        generateBtnText.textContent = "Generate Subtitles (.SRT)";
-      }
+      generateBtnText.textContent = isProcessingBatch
+        ? `Processing (${activeBatchIndex + 1}/${batchQueue.length})...`
+        : `⚡ Process Batch (${batchQueue.length} Videos)`;
     }
   }
 
@@ -547,10 +594,14 @@ async function processSingleItem(item) {
     currentJobId = data.job_id;
     item.jobId = data.job_id;
 
+    // Immediately notify server tasks dashboard that a new job was registered
+    fetchServerJobs();
+
     if (data.status === "completed" && data.result) {
       stopTimer();
       item.result = data.result;
       finishJob(data.result);
+      fetchServerJobs();
       return true;
     }
 
@@ -560,14 +611,34 @@ async function processSingleItem(item) {
     const result = await waitForJobCompletion(currentJobId, item);
     item.result = result;
     finishJob(result);
+    fetchServerJobs();
     return true;
   } catch (err) {
     stopTimer();
     item.error = err.message;
     if (statusMessage) statusMessage.textContent = "Error: " + err.message;
     addLog("Error: " + err.message, "error");
+    fetchServerJobs();
     return false;
   }
+}
+
+async function fetchJobResultWithRetry(jobId, maxAttempts = 20, delayMs = 350) {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/status`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.status === "completed" && data.result && data.result.segments) {
+          return data.result;
+        }
+      }
+    } catch (e) {
+      console.warn(`Retry fetching result for ${jobId} (attempt ${i + 1}):`, e);
+    }
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw new Error("Job completed but subtitle result could not be retrieved from server.");
 }
 
 function waitForJobCompletion(jobId, item) {
@@ -582,13 +653,16 @@ function waitForJobCompletion(jobId, item) {
         if (payload.step === "completed") {
           sse.close();
           stopTimer();
-          fetch(`/api/jobs/${jobId}/status`)
-            .then(r => r.json())
-            .then(d => resolve(d.result))
+          fetchJobResultWithRetry(jobId)
+            .then(res => {
+              fetchServerJobs();
+              resolve(res);
+            })
             .catch(reject);
         } else if (payload.step === "error") {
           sse.close();
           stopTimer();
+          fetchServerJobs();
           reject(new Error(payload.message || "Transcription failed"));
         }
       } catch (e) {
@@ -600,13 +674,14 @@ function waitForJobCompletion(jobId, item) {
       sse.close();
       // Poll fallback
       const result = await pollJobStatusUntilDone(jobId, item);
+      fetchServerJobs();
       if (result) resolve(result);
       else reject(new Error("Polling timed out or job failed"));
     };
   });
 }
 
-async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs = 2500) {
+async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs = 2000) {
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, intervalMs));
     try {
@@ -614,7 +689,7 @@ async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs
       if (!res.ok) continue;
       const data = await res.json();
 
-      if (data.status === "completed" && data.result) {
+      if (data.status === "completed" && data.result && data.result.segments) {
         stopTimer();
         return data.result;
       } else if (data.status === "failed") {
@@ -628,6 +703,165 @@ async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs
     }
   }
   return null;
+}
+
+// =========================================================================
+// 3b. Server Tasks Dashboard & Multi-Device Subtitle Viewer
+// =========================================================================
+let isFetchingServerJobs = false;
+
+async function fetchServerJobs() {
+  if (isFetchingServerJobs) return;
+  isFetchingServerJobs = true;
+
+  try {
+    const res = await fetch("/api/jobs");
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const jobs = data.jobs || [];
+    const activeCount = data.active_count || 0;
+    const totalCount = data.total || jobs.length;
+
+    if (serverTasksCount) serverTasksCount.textContent = totalCount;
+    if (activeTasksBadge) {
+      activeTasksBadge.textContent = `${activeCount} Active`;
+      if (activeCount > 0) {
+        activeTasksBadge.className = "badge badge-turbo";
+      } else {
+        activeTasksBadge.className = "badge badge-queue";
+      }
+    }
+
+    renderServerTasksList(jobs);
+  } catch (err) {
+    console.warn("Failed to fetch server jobs:", err);
+  } finally {
+    isFetchingServerJobs = false;
+  }
+}
+
+function renderServerTasksList(jobs) {
+  if (!tasksList) return;
+
+  if (!jobs || jobs.length === 0) {
+    tasksList.innerHTML = `
+      <div class="tasks-empty-hint">
+        No tasks queued or completed yet on this server. Drag and drop video(s) above to start!
+      </div>
+    `;
+    return;
+  }
+
+  // Preserve scroll position if user is scrolling
+  const prevScrollTop = tasksList.scrollTop;
+
+  tasksList.innerHTML = "";
+  jobs.forEach(job => {
+    const card = document.createElement("div");
+    card.className = `task-item-card ${job.status}`;
+    card.id = `server-task-${job.job_id}`;
+
+    let statusPill = "";
+    if (job.status === "processing") {
+      statusPill = `<span class="badge badge-turbo"><span class="engine-dot pulse" style="background:#ec4899;width:7px;height:7px;"></span> ${job.progress || 0}% Transcribing</span>`;
+    } else if (job.status === "queued") {
+      statusPill = `<span class="badge">⏳ Queued</span>`;
+    } else if (job.status === "completed") {
+      statusPill = `<span class="badge badge-emerald">✓ Completed</span>`;
+    } else if (job.status === "failed") {
+      statusPill = `<span class="badge" style="background:#fee2e2; color:#b91c1c;">✕ Failed</span>`;
+    }
+
+    let actionBtns = "";
+    if (job.status === "completed" || job.has_subtitles) {
+      actionBtns = `
+        <button type="button" class="btn btn-primary btn-sm" onclick="loadJobById('${job.job_id}')" title="Open subtitle editor & video player in Studio">
+          📺 Open in Studio
+        </button>
+        <a class="btn btn-secondary btn-sm" href="/api/jobs/${job.job_id}/download/srt" download title="Download .SRT">
+          ⬇️ SRT
+        </a>
+        <a class="btn btn-secondary btn-sm" href="/api/jobs/${job.job_id}/download/vtt" download title="Download .VTT">
+          ⬇️ VTT
+        </a>
+      `;
+    } else if (job.status === "processing") {
+      actionBtns = `
+        <button type="button" class="btn btn-secondary btn-sm" onclick="attachToLiveJob('${job.job_id}', '${escapeHtml(job.filename)}')">
+          👁️ Monitor Live
+        </button>
+      `;
+    }
+
+    const durationText = job.duration ? `${Math.round(job.duration)}s` : "";
+    const speedText = job.speedup_factor ? `⚡ ${job.speedup_factor}x` : "";
+    const metaParts = [
+      job.model_size ? `Model: ${job.model_size}` : "",
+      job.language ? `Lang: ${job.language}` : "",
+      durationText,
+      speedText
+    ].filter(Boolean).join(" • ");
+
+    card.innerHTML = `
+      <div class="task-item-left">
+        <span class="task-item-icon">${job.status === "processing" ? "⚡" : "🎬"}</span>
+        <div class="task-item-meta">
+          <div class="task-item-title" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</div>
+          <div class="task-item-subtitle">${metaParts || "Whisper Task " + job.job_id}</div>
+        </div>
+      </div>
+      <div class="task-item-right">
+        ${statusPill}
+        ${actionBtns}
+      </div>
+    `;
+
+    tasksList.appendChild(card);
+  });
+
+  tasksList.scrollTop = prevScrollTop;
+}
+
+async function loadJobById(jobId) {
+  try {
+    addLog(`[Studio] Loading subtitles for job ${jobId} from server...`);
+    const res = await fetch(`/api/jobs/${jobId}/status`);
+    if (!res.ok) throw new Error("Could not load job data from server");
+    const data = await res.json();
+
+    if (data.status === "completed" && data.result) {
+      currentJobId = jobId;
+      currentFile = null; // Streams video from /api/jobs/${jobId}/video
+      finishJob(data.result);
+      if (progressSection) progressSection.classList.add("hidden");
+      if (resultsSection) {
+        resultsSection.classList.remove("hidden");
+        resultsSection.scrollIntoView({ behavior: "smooth" });
+      }
+    } else {
+      alert(`Job is currently ${data.status}. Progress: ${data.progress || 0}%`);
+    }
+  } catch (err) {
+    alert("Failed to load subtitles: " + err.message);
+  }
+}
+
+function attachToLiveJob(jobId, filename) {
+  currentJobId = jobId;
+  currentFile = null;
+  if (progressSection) progressSection.classList.remove("hidden");
+  if (statusMessage) statusMessage.textContent = `Attached to live transcription: "${filename}"...`;
+  startTimer();
+
+  const dummyItem = { jobId: jobId, file: { name: filename, size: 0 }, progress: 0 };
+  waitForJobCompletion(jobId, dummyItem)
+    .then(result => {
+      finishJob(result);
+    })
+    .catch(err => {
+      alert("Job monitoring stopped: " + err.message);
+    });
 }
 
 // =========================================================================
@@ -1203,11 +1437,25 @@ if (cancelJobBtn) {
   });
 }
 
+// Global exports for inline HTML onclick handlers
+window.loadJobById = loadJobById;
+window.attachToLiveJob = attachToLiveJob;
+window.fetchServerJobs = fetchServerJobs;
+
+// Refresh button for server tasks
+if (refreshTasksBtn) {
+  refreshTasksBtn.addEventListener("click", () => {
+    fetchServerJobs();
+  });
+}
+
 // =========================================================================
 // 9. Startup
 // =========================================================================
 document.addEventListener("DOMContentLoaded", () => {
   setupDropzone();
   initSystemStatus();
+  fetchServerJobs();
   setInterval(initSystemStatus, 8000);
+  setInterval(fetchServerJobs, 4000);
 });

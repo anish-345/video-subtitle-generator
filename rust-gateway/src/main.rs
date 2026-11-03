@@ -223,6 +223,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/status", get(get_system_status))
+        .route("/api/jobs", get(proxy_list_jobs))
         .route("/api/transcribe", post(handle_transcribe))
         .route("/api/jobs/:id/stream", get(proxy_job_stream))
         .route("/api/jobs/:id/status", get(proxy_job_status))
@@ -271,13 +272,15 @@ async fn get_system_status(State(state): State<AppState>) -> impl IntoResponse {
         Ok(res) => {
             if let Ok(mut json) = res.json::<serde_json::Value>().await {
                 if let Some(obj) = json.as_object_mut() {
-                    let turbo_active = queued <= 1;
+                    let py_queued = obj.get("queued_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let effective_queued = std::cmp::max(queued, py_queued);
+                    let turbo_active = effective_queued <= 1;
                     obj.insert(
                         "rust_core".to_string(),
                         serde_json::json!({
                             "engine": "Rust v1.92 + Tokio Async Gateway",
                             "status": "operational",
-                            "queued_jobs": queued,
+                            "queued_jobs": effective_queued,
                             "gpu_concurrency_limit": 1,
                             "turbo_ready": turbo_active,
                             "acceleration_status": if turbo_active { "Maximum Power Turbo (170x Tensor Core)" } else { "Balanced Queue Serialization" },
@@ -495,6 +498,22 @@ async fn proxy_job_status(
             )
                 .into_response()
         }
+    }
+}
+
+async fn proxy_list_jobs(State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!("{WORKER_URL}/api/jobs");
+    match state.http_client.get(&url).send().await {
+        Ok(res) => {
+            let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
+            let bytes = res.bytes().await.unwrap_or_default();
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "detail": format!("{e}"), "jobs": [] }).to_string().into_bytes(),
+        ).into_response(),
     }
 }
 
