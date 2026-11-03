@@ -169,12 +169,16 @@ def process_transcription_job(
     noise_reduction: str = "studio"
 ):
     job = JOBS[job_id]
-    job["status"] = "processing"
+    job["status"] = "queued"
+    job["message"] = "Waiting in queue for GPU..."
     loop = job.get("loop")
 
     def on_progress(payload: Dict[str, Any]):
         job["progress"] = payload.get("progress", job["progress"])
         job["message"] = payload.get("message", job["message"])
+        if "status" in payload:
+            job["status"] = payload["status"]
+        payload["status"] = job["status"]
         if "turbo_mode" in payload:
             job["turbo_mode"] = payload["turbo_mode"]
         if "speedup_factor" in payload:
@@ -187,10 +191,12 @@ def process_transcription_job(
             loop.call_soon_threadsafe(q.put_nowait, payload)
 
     try:
+        on_progress({"step": "queued", "status": "queued", "progress": 0, "message": "Waiting in queue for GPU..."})
         if model_size == "sensevoice-small":
-            job["message"] = "Waiting in queue for GPU..."
             with GPU_LOCK:
+                job["status"] = "processing"
                 job["message"] = "Acquired GPU, starting Alibaba SenseVoice-Small..."
+                on_progress({"step": "status", "status": "processing", "progress": 1, "message": "Acquired GPU, starting Alibaba SenseVoice-Small..."})
                 result = sensevoice_service.transcribe_video(
                     video_path=video_path,
                     job_id=job_id,
@@ -205,9 +211,10 @@ def process_transcription_job(
                     progress_callback=on_progress
                 )
         else:
-            job["message"] = "Waiting in queue for GPU..."
             with GPU_LOCK:
+                job["status"] = "processing"
                 job["message"] = "Acquired GPU, starting transcription..."
+                on_progress({"step": "status", "status": "processing", "progress": 1, "message": "Acquired GPU, starting transcription..."})
                 result = whisper_service.transcribe_video(
                     video_path=video_path,
                     job_id=job_id,
@@ -225,10 +232,11 @@ def process_transcription_job(
         job["status"] = "completed"
         job["progress"] = 100
         job["result"] = result
+        on_progress({"step": "completed", "status": "completed", "progress": 100, "message": "Transcription finished"})
     except Exception as e:
         job["status"] = "failed"
         job["error"] = str(e)
-        on_progress({"step": "error", "progress": 100, "message": str(e)})
+        on_progress({"step": "error", "status": "failed", "progress": 100, "message": str(e)})
 
 from pydantic import BaseModel
 
@@ -521,13 +529,24 @@ def list_all_jobs():
     seen_ids = set()
 
     # 1. In-memory active/recent jobs
-    for jid, j in list(JOBS.items()):
+    queued_pos = 1
+    mem_jobs = sorted(list(JOBS.items()), key=lambda item: item[1].get("created_at", 0))
+    for jid, j in mem_jobs:
         seen_ids.add(jid)
+        status = j.get("status", "queued")
+        q_pos = None
+        if status == "queued":
+            q_pos = queued_pos
+            queued_pos += 1
+
         job_list.append({
             "job_id": jid,
             "filename": j.get("filename", "video"),
-            "status": j.get("status", "queued"),
+            "status": status,
             "progress": j.get("progress", 0),
+            "queue_position": q_pos,
+            "model_size": j.get("model_size"),
+            "language": j.get("language"),
             "message": j.get("message", ""),
             "created_at": j.get("created_at", time.time()),
             "total_duration": j.get("result", {}).get("total_duration", 0.0) if j.get("result") else 0.0,
@@ -546,6 +565,9 @@ def list_all_jobs():
                     "filename": meta.get("filename", f"subtitles_{jid}"),
                     "status": "completed",
                     "progress": 100,
+                    "queue_position": None,
+                    "model_size": meta.get("model_size"),
+                    "language": meta.get("language"),
                     "message": "Subtitles generated successfully",
                     "created_at": meta.get("created_at", meta_path.stat().st_mtime),
                     "total_duration": meta.get("total_duration", 0.0),
@@ -555,7 +577,16 @@ def list_all_jobs():
             except Exception:
                 pass
 
-    job_list.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    def sort_key(x):
+        s = x.get("status")
+        if s == "processing":
+            return (0, -x.get("created_at", 0))
+        elif s == "queued":
+            return (1, x.get("created_at", 0))
+        else:
+            return (2, -x.get("created_at", 0))
+
+    job_list.sort(key=sort_key)
     return {
         "jobs": job_list,
         "active_count": sum(1 for j in job_list if j.get("status") in ("processing", "queued")),

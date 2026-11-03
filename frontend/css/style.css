@@ -1217,6 +1217,16 @@ input:checked + .slider:before {
   transition: all 0.15s;
 }
 
+.batch-file-card.uploading {
+  border-color: #38bdf8;
+  background: #f0f9ff;
+}
+
+.batch-file-card.queued {
+  border-color: #fcd34d;
+  background: #fefce8;
+}
+
 .batch-file-card.processing {
   border-color: #6366f1;
   background: #eef2ff;

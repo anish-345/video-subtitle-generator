@@ -505,123 +505,308 @@ function formatBytes(bytes) {
 }
 
 // =========================================================================
-// 3. Batch Queue Sequential Executor
+// 3. Batch Queue Pipelined Upload & Server Task Assigning
 // =========================================================================
+let activeUploadXhr = null;
+let activeFocusJobId = null;
+
 if (generateBtn) {
-  generateBtn.addEventListener("click", async () => {
+  generateBtn.addEventListener("click", () => {
     if (batchQueue.length === 0 || isProcessingBatch) return;
-
-    isProcessingBatch = true;
-    generateBtn.disabled = true;
-
-    // Process from the first non-completed item
-    for (let i = 0; i < batchQueue.length; i++) {
-      if (batchQueue[i].status === "completed") continue;
-
-      activeBatchIndex = i;
-      const currentItem = batchQueue[i];
-      currentItem.status = "processing";
-      renderBatchQueueUI();
-
-      if (batchProgressPill) {
-        batchProgressPill.textContent = `Video ${i + 1} of ${batchQueue.length}`;
-        batchProgressPill.classList.remove("hidden");
-      }
-
-      const success = await processSingleItem(currentItem);
-      if (success) {
-        currentItem.status = "completed";
-      } else {
-        currentItem.status = "failed";
-      }
-      renderBatchQueueUI();
-    }
-
-    isProcessingBatch = false;
-    generateBtn.disabled = false;
-    renderBatchQueueUI();
+    startBatchProcessingPipeline();
   });
 }
 
-async function processSingleItem(item) {
-  currentFile = item.file;
+async function startBatchProcessingPipeline() {
+  isProcessingBatch = true;
+  if (generateBtn) generateBtn.disabled = true;
   if (progressSection) progressSection.classList.remove("hidden");
-  if (queueStatusPill) queueStatusPill.classList.add("hidden");
-  if (speedupPill) speedupPill.classList.add("hidden");
-  if (logTerminal) logTerminal.innerHTML = "";
-  if (progressBar) progressBar.style.width = "2%";
-  if (progressPercent) progressPercent.textContent = "0%";
-  if (accurateProgressPill) accurateProgressPill.textContent = "00:00 / 00:00 (0%)";
-  if (etaTimerPill) etaTimerPill.textContent = "ETA: Calculating...";
-  if (statusMessage) statusMessage.textContent = `Uploading "${item.file.name}" to Rust Gateway...`;
-
   startTimer();
 
-  const isTurbo = turboToggle ? turboToggle.checked : true;
-  const useVad = coverageSelect ? coverageSelect.value === "vad" : false;
-  const noiseVal = noiseReductionSelect ? noiseReductionSelect.value : "studio";
+  addLog(`[Batch Controller] Initializing pipelined upload & task queue for ${batchQueue.length} files...`);
 
-  addLog(`[Rust Core] Submitting "${item.file.name}" (${formatBytes(item.file.size)})...`);
-  addLog(`[Config] Model: ${modelSelect.value} | Language: ${languageSelect.value} | Noise: ${noiseVal} | Turbo: ${isTurbo ? '170x' : 'Balanced'}`);
+  // Start the sequential upload loop: uploads file 1 -> assigns job -> uploads file 2 -> assigns job...
+  runPipelinedUploads();
+}
 
-  const formData = new FormData();
-  formData.append("file", item.file);
-  formData.append("model_size", modelSelect.value);
-  formData.append("language", languageSelect.value);
-  formData.append("task", taskSelect.value);
-  formData.append("turbo_mode", isTurbo ? "true" : "false");
-  formData.append("vad_filter", useVad ? "true" : "false");
-  formData.append("noise_reduction", noiseVal);
+async function runPipelinedUploads() {
+  for (let i = 0; i < batchQueue.length; i++) {
+    const item = batchQueue[i];
+    if (item.jobId || item.status === "completed") continue;
 
-  try {
-    const res = await fetch("/api/transcribe", {
-      method: "POST",
-      body: formData
-    });
+    activeBatchIndex = i;
+    item.status = "uploading";
+    item.uploadProgress = 0;
+    renderBatchQueueUI();
 
-    if (!res.ok) {
-      let errMsg = "Upload request failed";
-      try {
-        const err = await res.json();
-        errMsg = err.detail || err.message || JSON.stringify(err);
-      } catch {
-        errMsg = await res.text();
+    if (batchProgressPill) {
+      batchProgressPill.textContent = `Uploading ${i + 1} of ${batchQueue.length}`;
+      batchProgressPill.classList.remove("hidden");
+    }
+
+    if (statusMessage) {
+      statusMessage.textContent = `Uploading "${item.file.name}" to Server...`;
+    }
+    addLog(`[Uploader] Uploading "${item.file.name}" (${formatBytes(item.file.size)})...`);
+
+    try {
+      const data = await uploadFileWithXhr(item, (pct) => {
+        item.uploadProgress = pct;
+        updateItemCardUI(item);
+        if (!activeFocusJobId || activeFocusJobId === item.jobId) {
+          if (progressBar) progressBar.style.width = `${pct}%`;
+          if (progressPercent) progressPercent.textContent = `${pct}%`;
+          if (statusMessage) statusMessage.textContent = `Uploading "${item.file.name}" (${pct}%)...`;
+        }
+      });
+
+      // Server assigned job_id and placed it in the queue!
+      item.jobId = data.job_id;
+      item.status = data.status || "queued";
+      item.uploadProgress = 100;
+      addLog(`[Task Assigned] Job ID ${item.jobId} created on server for "${item.file.name}" (${item.status}).`, "success");
+
+      // Auto-focus the first active job
+      if (!activeFocusJobId) {
+        activeFocusJobId = item.jobId;
+        currentJobId = item.jobId;
+        currentFile = item.file;
       }
-      throw new Error(errMsg);
+
+      renderBatchQueueUI();
+      fetchServerJobs(); // Update server dashboard immediately!
+
+      // Immediately launch live tracker for this job
+      trackJobStream(item);
+
+    } catch (err) {
+      item.status = "failed";
+      item.error = err.message;
+      addLog(`[Upload Error] "${item.file.name}": ${err.message}`, "error");
+      renderBatchQueueUI();
     }
+  }
 
-    const data = await res.json();
-    currentJobId = data.job_id;
-    item.jobId = data.job_id;
-
-    // Immediately notify server tasks dashboard that a new job was registered
-    fetchServerJobs();
-
-    if (data.status === "completed" && data.result) {
-      stopTimer();
-      item.result = data.result;
-      finishJob(data.result);
-      fetchServerJobs();
-      return true;
-    }
-
-    addLog(`[Rust Gateway] Job assigned: ${currentJobId}. Subscribed to live GPU event stream...`, "success");
-
-    // Await completion via Promise wrapped around EventSource / Polling
-    const result = await waitForJobCompletion(currentJobId, item);
-    item.result = result;
-    finishJob(result);
-    fetchServerJobs();
-    return true;
-  } catch (err) {
-    stopTimer();
-    item.error = err.message;
-    if (statusMessage) statusMessage.textContent = "Error: " + err.message;
-    addLog("Error: " + err.message, "error");
-    fetchServerJobs();
-    return false;
+  if (batchProgressPill) {
+    batchProgressPill.textContent = `All files uploaded • GPU processing`;
   }
 }
+
+function uploadFileWithXhr(item, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    activeUploadXhr = xhr;
+
+    const isTurbo = turboToggle ? turboToggle.checked : true;
+    const useVad = coverageSelect ? coverageSelect.value === "vad" : false;
+    const noiseVal = noiseReductionSelect ? noiseReductionSelect.value : "studio";
+
+    const formData = new FormData();
+    formData.append("file", item.file);
+    formData.append("model_size", modelSelect.value);
+    formData.append("language", languageSelect.value);
+    formData.append("task", taskSelect.value);
+    formData.append("turbo_mode", isTurbo ? "true" : "false");
+    formData.append("vad_filter", useVad ? "true" : "false");
+    formData.append("noise_reduction", noiseVal);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
+        onProgress(pct);
+      }
+    };
+
+    xhr.onload = () => {
+      activeUploadXhr = null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          resolve(res);
+        } catch {
+          reject(new Error("Invalid response from server"));
+        }
+      } else {
+        let errMsg = `Upload failed (${xhr.status})`;
+        try {
+          const err = JSON.parse(xhr.responseText);
+          errMsg = err.detail || err.message || errMsg;
+        } catch {}
+        reject(new Error(errMsg));
+      }
+    };
+
+    xhr.onerror = () => {
+      activeUploadXhr = null;
+      reject(new Error("Network connection error during upload"));
+    };
+
+    xhr.open("POST", "/api/transcribe");
+    xhr.send(formData);
+  });
+}
+
+function trackJobStream(item) {
+  if (!item.jobId) return;
+
+  const sse = new EventSource(`/api/jobs/${item.jobId}/stream`);
+
+  sse.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.status) item.status = payload.status;
+      if (payload.progress !== undefined) item.progress = payload.progress;
+      if (payload.message) item.message = payload.message;
+
+      updateItemCardUI(item);
+
+      // If this item is currently focused in the live monitor
+      if (activeFocusJobId === item.jobId) {
+        handleProgressUpdate(payload, item);
+      }
+
+      if (payload.step === "completed") {
+        sse.close();
+        item.status = "completed";
+        item.progress = 100;
+        updateItemCardUI(item);
+        addLog(`[GPU Finished] Transcription completed for "${item.file.name}"!`, "success");
+
+        fetchJobResultWithRetry(item.jobId)
+          .then(result => {
+            item.result = result;
+            renderBatchQueueUI();
+            fetchServerJobs();
+
+            // If studio is empty, or this is focused job, load into studio
+            if (!currentJobData || activeFocusJobId === item.jobId) {
+              currentFile = item.file;
+              currentJobId = item.jobId;
+              finishJob(result);
+            }
+            checkAllBatchFinished();
+          })
+          .catch(e => {
+            console.warn("Result retrieve notice", e);
+            checkAllBatchFinished();
+          });
+
+      } else if (payload.step === "error") {
+        sse.close();
+        item.status = "failed";
+        item.error = payload.message || "Failed";
+        updateItemCardUI(item);
+        addLog(`[Job Error] "${item.file.name}": ${item.error}`, "error");
+        renderBatchQueueUI();
+        fetchServerJobs();
+        checkAllBatchFinished();
+      }
+    } catch (e) {
+      console.warn("SSE parse error", e);
+    }
+  };
+
+  sse.onerror = async () => {
+    sse.close();
+    // Poll fallback for this job
+    const result = await pollJobStatusUntilDone(item.jobId, item);
+    if (result) {
+      item.status = "completed";
+      item.progress = 100;
+      item.result = result;
+      if (!currentJobData || activeFocusJobId === item.jobId) {
+        currentFile = item.file;
+        currentJobId = item.jobId;
+        finishJob(result);
+      }
+    } else {
+      item.status = "failed";
+    }
+    updateItemCardUI(item);
+    renderBatchQueueUI();
+    fetchServerJobs();
+    checkAllBatchFinished();
+  };
+}
+
+function checkAllBatchFinished() {
+  const isAnyRunning = batchQueue.some(i => i.status === "uploading" || i.status === "queued" || i.status === "processing");
+  if (!isAnyRunning && batchQueue.length > 0) {
+    isProcessingBatch = false;
+    stopTimer();
+    if (generateBtn) {
+      generateBtn.disabled = false;
+      if (generateBtnText) {
+        generateBtnText.textContent = `⚡ Process Batch (${batchQueue.length} Videos)`;
+      }
+    }
+    if (batchProgressPill) batchProgressPill.classList.add("hidden");
+    const completedCount = batchQueue.filter(i => i.status === "completed").length;
+    if (statusMessage) {
+      statusMessage.textContent = `Batch finished! ${completedCount} of ${batchQueue.length} videos transcribed.`;
+    }
+    renderBatchQueueUI();
+    fetchServerJobs();
+  }
+}
+
+function updateItemCardUI(item) {
+  const card = document.getElementById(`item-${item.id}`);
+  if (!card) return;
+
+  card.className = `batch-file-card ${item.status}`;
+  const rightEl = card.querySelector(".batch-file-right");
+  if (!rightEl) return;
+
+  let statusBadge = "";
+  if (item.status === "uploading") {
+    statusBadge = `<span class="badge" style="background:#e0f2fe; color:#0369a1;"><span class="engine-dot pulse" style="background:#0284c7; width:7px; height:7px;"></span> ⬆️ Uploading (${item.uploadProgress || 0}%)</span>`;
+  } else if (item.status === "queued") {
+    statusBadge = `<span class="badge" style="background:#fef3c7; color:#92400e;">⏳ Queued on Server ${item.jobId ? '(' + item.jobId + ')' : ''}</span>`;
+  } else if (item.status === "processing") {
+    statusBadge = `<span class="badge badge-turbo"><span class="engine-dot pulse" style="background:#ec4899; width:7px; height:7px;"></span> ⚡ Transcribing (${item.progress || 0}%)</span>`;
+  } else if (item.status === "completed") {
+    statusBadge = `<span class="badge badge-emerald">✓ Completed</span>`;
+  } else if (item.status === "failed") {
+    statusBadge = `<span class="badge" style="background:#fee2e2; color:#b91c1c;">✕ Error</span>`;
+  } else {
+    statusBadge = `<span class="badge">⏳ Ready</span>`;
+  }
+
+  const idx = batchQueue.indexOf(item);
+  let actionBtnHtml = `
+    <button type="button" class="btn-icon-sm delete" title="Remove from queue" onclick="removeFileFromQueue(${idx})">✕</button>
+  `;
+  if (item.status === "completed" && item.result) {
+    actionBtnHtml = `
+      <button type="button" class="btn btn-secondary btn-sm" onclick="loadCompletedJobToStudio(${idx})">Open in Studio</button>
+      <a class="btn btn-secondary btn-sm" href="/api/jobs/${item.jobId}/download/srt" download title="Download .SRT">⬇️ SRT</a>
+      ${actionBtnHtml}
+    `;
+  } else if (item.status === "processing" || item.status === "queued") {
+    actionBtnHtml = `
+      <button type="button" class="btn btn-secondary btn-sm" onclick="focusActiveJob('${item.id}')" title="Monitor live progress">👁️ Monitor</button>
+      ${actionBtnHtml}
+    `;
+  }
+
+  rightEl.innerHTML = `${statusBadge} ${actionBtnHtml}`;
+}
+
+window.focusActiveJob = (itemId) => {
+  const item = batchQueue.find(i => i.id === itemId);
+  if (!item) return;
+  activeFocusJobId = item.jobId;
+  currentJobId = item.jobId;
+  currentFile = item.file;
+  if (statusMessage) statusMessage.textContent = `Monitoring "${item.file.name}" (${item.status})...`;
+  if (progressBar) progressBar.style.width = `${item.progress || 0}%`;
+  if (progressPercent) progressPercent.textContent = `${item.progress || 0}%`;
+  if (progressSection) {
+    progressSection.classList.remove("hidden");
+    progressSection.scrollIntoView({ behavior: "smooth" });
+  }
+};
 
 async function fetchJobResultWithRetry(jobId, maxAttempts = 20, delayMs = 350) {
   for (let i = 0; i < maxAttempts; i++) {
@@ -639,46 +824,6 @@ async function fetchJobResultWithRetry(jobId, maxAttempts = 20, delayMs = 350) {
     await new Promise(r => setTimeout(r, delayMs));
   }
   throw new Error("Job completed but subtitle result could not be retrieved from server.");
-}
-
-function waitForJobCompletion(jobId, item) {
-  return new Promise((resolve, reject) => {
-    let sse = new EventSource(`/api/jobs/${jobId}/stream`);
-
-    sse.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        handleProgressUpdate(payload, item);
-
-        if (payload.step === "completed") {
-          sse.close();
-          stopTimer();
-          fetchJobResultWithRetry(jobId)
-            .then(res => {
-              fetchServerJobs();
-              resolve(res);
-            })
-            .catch(reject);
-        } else if (payload.step === "error") {
-          sse.close();
-          stopTimer();
-          fetchServerJobs();
-          reject(new Error(payload.message || "Transcription failed"));
-        }
-      } catch (e) {
-        console.warn("SSE parse error", e);
-      }
-    };
-
-    sse.onerror = async () => {
-      sse.close();
-      // Poll fallback
-      const result = await pollJobStatusUntilDone(jobId, item);
-      fetchServerJobs();
-      if (result) resolve(result);
-      else reject(new Error("Polling timed out or job failed"));
-    };
-  });
 }
 
 async function pollJobStatusUntilDone(jobId, item, maxAttempts = 120, intervalMs = 2000) {
@@ -766,7 +911,8 @@ function renderServerTasksList(jobs) {
     if (job.status === "processing") {
       statusPill = `<span class="badge badge-turbo"><span class="engine-dot pulse" style="background:#ec4899;width:7px;height:7px;"></span> ${job.progress || 0}% Transcribing</span>`;
     } else if (job.status === "queued") {
-      statusPill = `<span class="badge">⏳ Queued</span>`;
+      const qPos = job.queue_position ? ` #${job.queue_position}` : "";
+      statusPill = `<span class="badge" style="background:#fef3c7; color:#92400e;">⏳ Queued${qPos}</span>`;
     } else if (job.status === "completed") {
       statusPill = `<span class="badge badge-emerald">✓ Completed</span>`;
     } else if (job.status === "failed") {
@@ -786,10 +932,10 @@ function renderServerTasksList(jobs) {
           ⬇️ VTT
         </a>
       `;
-    } else if (job.status === "processing") {
+    } else if (job.status === "processing" || job.status === "queued") {
       actionBtns = `
         <button type="button" class="btn btn-secondary btn-sm" onclick="attachToLiveJob('${job.job_id}', '${escapeHtml(job.filename)}')">
-          👁️ Monitor Live
+          👁️ Monitor
         </button>
       `;
     }
