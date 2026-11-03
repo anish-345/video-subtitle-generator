@@ -411,12 +411,10 @@ def extract_audio_ffmpeg(
     cmd = [
         FFMPEG_PATH,
         "-y",
-        "-threads", str(cpu_cores),
-        "-filter_threads", str(cpu_cores),
-        "-filter_complex_threads", str(cpu_cores),
-        "-thread_queue_size", "2048",
         "-i", str(input_video_path),
-        "-vn", "-sn", "-dn"
+        "-vn", "-sn", "-dn",
+        "-threads", str(cpu_cores),
+        "-filter_threads", str(cpu_cores)
     ]
     af = AUDIO_FILTER_PRESETS.get(noise_preset)
     if af:
@@ -578,7 +576,7 @@ class WhisperService:
             device = "cuda" if gpu["cuda_available"] else "cpu"
         
         if compute_type is None:
-            compute_type = "float16" if device == "cuda" else "int8"
+            compute_type = "int8_float16" if device == "cuda" else "int8"
 
         cache_key = f"{model_size}_{device}_{compute_type}"
         if cache_key in self._loaded_models:
@@ -711,9 +709,9 @@ class WhisperService:
                             cpu_cores = max(4, min(16, (os.cpu_count() or 8)))
                             cmd_clean = [
                                 FFMPEG_PATH, "-y",
+                                "-i", str(src_wav),
                                 "-threads", str(cpu_cores),
                                 "-filter_threads", str(cpu_cores),
-                                "-i", str(src_wav),
                                 "-c:a", "libmp3lame", "-b:a", "128k",
                                 str(dst_mp3)
                             ]
@@ -1188,9 +1186,9 @@ class SenseVoiceService:
                             cpu_cores = max(4, min(16, (os.cpu_count() or 8)))
                             cmd_clean = [
                                 FFMPEG_PATH, "-y",
+                                "-i", str(src_wav),
                                 "-threads", str(cpu_cores),
                                 "-filter_threads", str(cpu_cores),
-                                "-i", str(src_wav),
                                 "-c:a", "libmp3lame", "-b:a", "128k",
                                 str(dst_mp3)
                             ]
