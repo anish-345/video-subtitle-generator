@@ -186,10 +186,15 @@ class DeepAudioEnhancer:
 
         total_samples = audio_stereo.shape[1]
         chunk_samples = sr * 30  # 30-second processing chunks to preserve memory
+        total_chunks = (total_samples + chunk_samples - 1) // chunk_samples
 
         vocal_parts = []
-        for start in range(0, total_samples, chunk_samples):
+        for idx, start in enumerate(range(0, total_samples, chunk_samples)):
             end = min(start + chunk_samples, total_samples)
+            if progress_cb:
+                pct = int((idx / max(1, total_chunks)) * 100)
+                progress_cb(f"Separating vocals & music (UVR AI): chunk {idx+1}/{total_chunks} ({pct}%)...")
+
             chunk = np.ascontiguousarray(audio_stereo[:, start:end])
             if chunk.shape[1] < sr:
                 pad_len = sr - chunk.shape[1]
@@ -220,10 +225,15 @@ class DeepAudioEnhancer:
         audio_flat = audio_mono.flatten()
         total_samples = len(audio_flat)
         chunk_samples = sr * 30
+        total_chunks = (total_samples + chunk_samples - 1) // chunk_samples
 
         parts = []
-        for start in range(0, total_samples, chunk_samples):
+        for idx, start in enumerate(range(0, total_samples, chunk_samples)):
             end = min(start + chunk_samples, total_samples)
+            if progress_cb:
+                pct = int((idx / max(1, total_chunks)) * 100)
+                progress_cb(f"Applying neural speech denoising (GTCRN AI): chunk {idx+1}/{total_chunks} ({pct}%)...")
+
             chunk = np.ascontiguousarray(audio_flat[start:end])
             out = denoiser.run(chunk, sr)
             parts.append(np.array(out.samples, dtype=np.float32))
