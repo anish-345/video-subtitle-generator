@@ -134,7 +134,7 @@ class DeepAudioEnhancer:
                 model=sherpa_onnx.OfflineSourceSeparationModelConfig(
                     uvr=sherpa_onnx.OfflineSourceSeparationUvrModelConfig(model=str(UVR_PATH)),
                     provider=self._get_provider(),
-                    num_threads=2
+                    num_threads=max(4, min(16, (os.cpu_count() or 4)))
                 )
             )
             self._uvr_separator = sherpa_onnx.OfflineSourceSeparation(cfg)
@@ -160,7 +160,7 @@ class DeepAudioEnhancer:
                 model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(
                     gtcrn=sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig(model=str(GTCRN_PATH)),
                     provider=self._get_provider(),
-                    num_threads=2
+                    num_threads=max(4, min(16, (os.cpu_count() or 4)))
                 )
             )
             self._gtcrn_denoiser = sherpa_onnx.OfflineSpeechDenoiser(cfg)
