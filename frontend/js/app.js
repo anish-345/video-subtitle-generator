@@ -683,6 +683,8 @@ function trackJobStream(item) {
               currentFile = item.file;
               currentJobId = item.jobId;
               finishJob(result);
+      playCompletionChime();
+      showToast(`Transcription finished for "${item.file ? item.file.name : 'video'}"!`, "success", 4000);
             }
             checkAllBatchFinished();
           })
@@ -718,6 +720,8 @@ function trackJobStream(item) {
         currentFile = item.file;
         currentJobId = item.jobId;
         finishJob(result);
+      playCompletionChime();
+      showToast(`Transcription finished for "${item.file ? item.file.name : 'video'}"!`, "success", 4000);
       }
     } else {
       item.status = "failed";
@@ -1004,6 +1008,8 @@ function attachToLiveJob(jobId, filename) {
   waitForJobCompletion(jobId, dummyItem)
     .then(result => {
       finishJob(result);
+      playCompletionChime();
+      showToast(`Transcription finished for "${item.file ? item.file.name : 'video'}"!`, "success", 4000);
     })
     .catch(err => {
       alert("Job monitoring stopped: " + err.message);
@@ -1243,7 +1249,7 @@ function syncSubtitleOverlayAndTable(currentTime) {
           const viewTop = container.scrollTop;
           const viewBottom = viewTop + container.clientHeight;
           if (rowTop < viewTop || rowBottom > viewBottom) {
-            row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            if (typeof autoScrollEnabled === "undefined" || autoScrollEnabled) { row.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
           }
         }
       }
@@ -1607,4 +1613,324 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchServerJobs();
   setInterval(initSystemStatus, 8000);
   setInterval(fetchServerJobs, 4000);
+});
+
+
+// =========================================================================
+// 10. Theme, Sound, Toasts, Stepper & Mobile Controller
+// =========================================================================
+
+// Theme State
+let currentTheme = "light";
+let soundEnabled = true;
+let autoScrollEnabled = true;
+
+// DOM Elements - Theme & Mobile
+const themeToggleBtn = document.getElementById("themeToggleBtn");
+const themeToggleIcon = document.getElementById("themeToggleIcon");
+const soundToggleBtn = document.getElementById("soundToggleBtn");
+const soundToggleIcon = document.getElementById("soundToggleIcon");
+
+const stepBtnSetup = document.getElementById("stepBtnSetup");
+const stepBtnProgress = document.getElementById("stepBtnProgress");
+const stepBtnStudio = document.getElementById("stepBtnStudio");
+const stepBatchCount = document.getElementById("stepBatchCount");
+const stepProgressBadge = document.getElementById("stepProgressBadge");
+const stepStudioBadge = document.getElementById("stepStudioBadge");
+
+const mobileBottomBar = document.getElementById("mobileBottomBar");
+const mobileGenerateBtn = document.getElementById("mobileGenerateBtn");
+const mobileGenerateBtnText = document.getElementById("mobileGenerateBtnText");
+const mobileStudioActions = document.getElementById("mobileStudioActions");
+const mobileDownloadSrtBtn = document.getElementById("mobileDownloadSrtBtn");
+const mobileSaveEditsBtn = document.getElementById("mobileSaveEditsBtn");
+
+const toggleAutoScrollBtn = document.getElementById("toggleAutoScrollBtn");
+const overlayStyleSelect = document.getElementById("overlayStyleSelect");
+const overlaySizeSelect = document.getElementById("overlaySizeSelect");
+
+// --- Theme Management ---
+function initTheme() {
+  const saved = localStorage.getItem("whisper_theme");
+  if (saved) {
+    currentTheme = saved;
+  } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    currentTheme = "dark";
+  } else {
+    currentTheme = "light";
+  }
+  applyTheme(currentTheme);
+}
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("whisper_theme", theme);
+  if (themeToggleIcon) {
+    themeToggleIcon.textContent = theme === "dark" ? "☀️" : "🌙";
+  }
+  if (themeToggleBtn) {
+    themeToggleBtn.title = theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode";
+  }
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener("click", () => {
+    applyTheme(currentTheme === "dark" ? "light" : "dark");
+    showToast(`Switched to ${currentTheme === "dark" ? "Dark" : "Light"} Mode`, "info", 2000);
+  });
+}
+
+// --- Sound Chime (Web Audio API) ---
+function initSound() {
+  const saved = localStorage.getItem("whisper_sound");
+  soundEnabled = saved !== "off";
+  if (soundToggleIcon) {
+    soundToggleIcon.textContent = soundEnabled ? "🔔" : "🔕";
+  }
+}
+
+if (soundToggleBtn) {
+  soundToggleBtn.addEventListener("click", () => {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem("whisper_sound", soundEnabled ? "on" : "off");
+    if (soundToggleIcon) soundToggleIcon.textContent = soundEnabled ? "🔔" : "🔕";
+    showToast(soundEnabled ? "Audio chime enabled 🔔" : "Audio chime muted 🔕", "info", 2000);
+    if (soundEnabled) playCompletionChime();
+  });
+}
+
+function playCompletionChime() {
+  if (!soundEnabled) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(659.25, now); // E5
+    gain1.gain.setValueAtTime(0.12, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.35);
+
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(987.77, now + 0.15); // B5
+    gain2.gain.setValueAtTime(0.15, now + 0.15);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.15);
+    osc2.stop(now + 0.65);
+  } catch (e) {
+    console.warn("Audio chime notice", e);
+  }
+}
+
+// --- Toast Notification System ---
+function showToast(message, type = "info", duration = 3500) {
+  const container = document.getElementById("toastContainer");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = `toast-item toast-${type}`;
+
+  const icons = {
+    success: "✓",
+    error: "✕",
+    warning: "⚠️",
+    info: "ℹ️"
+  };
+
+  toast.innerHTML = `
+    <span class="toast-icon">${icons[type] || "ℹ️"}</span>
+    <span class="toast-msg">${escapeHtml(message)}</span>
+    <button type="button" class="toast-close" aria-label="Close">✕</button>
+  `;
+
+  toast.querySelector(".toast-close").onclick = () => {
+    toast.classList.add("toast-exit");
+    setTimeout(() => toast.remove(), 250);
+  };
+
+  container.appendChild(toast);
+  setTimeout(() => toast.classList.add("toast-visible"), 15);
+
+  setTimeout(() => {
+    if (toast.parentNode) {
+      toast.classList.add("toast-exit");
+      setTimeout(() => toast.remove(), 250);
+    }
+  }, duration);
+}
+
+// --- Studio Stepper Navigation ---
+function initStepper() {
+  const steps = [
+    { btn: stepBtnSetup, section: setupSection },
+    { btn: stepBtnProgress, section: progressSection },
+    { btn: stepBtnStudio, section: resultsSection }
+  ];
+
+  steps.forEach(s => {
+    if (!s.btn) return;
+    s.btn.addEventListener("click", () => {
+      // Allow switching between active views
+      if (s.section === progressSection && !isProcessingBatch && (!currentJobId || currentJobData)) {
+        showToast("No active GPU transcription currently in progress.", "info");
+      }
+      if (s.section === resultsSection && !currentJobData) {
+        showToast("No completed subtitles yet. Upload a video to get started!", "info");
+        return;
+      }
+      activateSection(s.section);
+    });
+  });
+}
+
+function activateSection(targetSection) {
+  if (setupSection) setupSection.classList.toggle("hidden", setupSection !== targetSection);
+  if (progressSection) progressSection.classList.toggle("hidden", progressSection !== targetSection);
+  if (resultsSection) resultsSection.classList.toggle("hidden", resultsSection !== targetSection);
+
+  if (stepBtnSetup) stepBtnSetup.classList.toggle("active", setupSection === targetSection);
+  if (stepBtnProgress) stepBtnProgress.classList.toggle("active", progressSection === targetSection);
+  if (stepBtnStudio) stepBtnStudio.classList.toggle("active", resultsSection === targetSection);
+
+  // Sync mobile bottom bar
+  updateMobileBottomBar();
+}
+
+function updateStepperBadges() {
+  if (stepBatchCount) {
+    stepBatchCount.textContent = batchQueue.length.toString();
+  }
+  if (stepStudioBadge && currentJobData) {
+    stepStudioBadge.classList.remove("hidden");
+  }
+}
+
+// --- Quick Presets ---
+function initPresets() {
+  const presetPills = document.querySelectorAll(".preset-pill");
+  presetPills.forEach(pill => {
+    pill.addEventListener("click", () => {
+      presetPills.forEach(p => p.classList.remove("active"));
+      pill.classList.add("active");
+      const preset = pill.dataset.preset;
+      applyPreset(preset);
+    });
+  });
+}
+
+function applyPreset(preset) {
+  if (preset === "turbo") {
+    if (modelSelect) modelSelect.value = "base";
+    if (noiseReductionSelect) noiseReductionSelect.value = "studio";
+    if (turboToggle) turboToggle.checked = true;
+    if (coverageSelect) coverageSelect.value = "full";
+    showToast("⚡ Preset applied: 170x Turbo (Fast)", "success");
+  } else if (preset === "deep_clean") {
+    if (modelSelect) modelSelect.value = "base";
+    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (turboToggle) turboToggle.checked = true;
+    if (coverageSelect) coverageSelect.value = "full";
+    showToast("🧠 Preset applied: AI Voice Isolation & Music Removal (UVR MDX-Net + GTCRN)", "success");
+  } else if (preset === "sensevoice") {
+    if (modelSelect) modelSelect.value = "sensevoice-small";
+    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (turboToggle) turboToggle.checked = true;
+    if (coverageSelect) coverageSelect.value = "full";
+    showToast("🎯 Preset applied: Alibaba SenseVoice-Small with Deep Clean", "success");
+  } else if (preset === "cinema") {
+    if (modelSelect) modelSelect.value = "large-v3-turbo";
+    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (turboToggle) turboToggle.checked = true;
+    if (coverageSelect) coverageSelect.value = "full";
+    showToast("👑 Preset applied: Cinema SOTA (Large-v3 Turbo + Deep Clean)", "success");
+  }
+}
+
+// --- Mobile Bottom Bar Sync ---
+function updateMobileBottomBar() {
+  if (!mobileBottomBar) return;
+
+  const isStudioVisible = resultsSection && !resultsSection.classList.contains("hidden");
+
+  if (isStudioVisible) {
+    if (mobileGenerateBtn) mobileGenerateBtn.classList.add("hidden");
+    if (mobileStudioActions) mobileStudioActions.classList.remove("hidden");
+  } else {
+    if (mobileGenerateBtn) mobileGenerateBtn.classList.remove("hidden");
+    if (mobileStudioActions) mobileStudioActions.classList.add("hidden");
+    if (mobileGenerateBtn && generateBtn) {
+      mobileGenerateBtn.disabled = generateBtn.disabled;
+      if (mobileGenerateBtnText && generateBtnText) {
+        mobileGenerateBtnText.textContent = generateBtnText.textContent;
+      }
+    }
+  }
+}
+
+if (mobileGenerateBtn) {
+  mobileGenerateBtn.addEventListener("click", () => {
+    if (generateBtn && !generateBtn.disabled) {
+      generateBtn.click();
+    }
+  });
+}
+
+if (mobileDownloadSrtBtn) {
+  mobileDownloadSrtBtn.addEventListener("click", () => {
+    if (downloadSrtBtn) downloadSrtBtn.click();
+  });
+}
+
+if (mobileSaveEditsBtn) {
+  mobileSaveEditsBtn.addEventListener("click", () => {
+    if (saveEditsBtn) saveEditsBtn.click();
+  });
+}
+
+// --- Auto-Scroll Toggle ---
+if (toggleAutoScrollBtn) {
+  toggleAutoScrollBtn.addEventListener("click", () => {
+    autoScrollEnabled = !autoScrollEnabled;
+    toggleAutoScrollBtn.textContent = autoScrollEnabled ? "📜 Auto-Scroll: ON" : "📜 Auto-Scroll: OFF";
+    toggleAutoScrollBtn.classList.toggle("active", autoScrollEnabled);
+    showToast(autoScrollEnabled ? "Auto-scroll enabled" : "Auto-scroll paused", "info", 1800);
+  });
+}
+
+// --- Overlay Style & Size Customizer ---
+if (overlayStyleSelect) {
+  overlayStyleSelect.addEventListener("change", (e) => {
+    if (!videoSubtitleOverlay) return;
+    videoSubtitleOverlay.classList.remove("theme-netflix", "theme-yellow", "theme-white");
+    videoSubtitleOverlay.classList.add(`theme-${e.target.value}`);
+  });
+}
+
+if (overlaySizeSelect) {
+  overlaySizeSelect.addEventListener("change", (e) => {
+    if (!videoSubtitleOverlay) return;
+    videoSubtitleOverlay.classList.remove("size-small", "size-medium", "size-large");
+    videoSubtitleOverlay.classList.add(`size-${e.target.value}`);
+  });
+}
+
+// Hook into startup initialization
+document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+  initSound();
+  initStepper();
+  initPresets();
+  updateStepperBadges();
+  updateMobileBottomBar();
 });

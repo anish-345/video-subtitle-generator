@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
   <title>Whisper Subtitle Studio - High-Concurrency GPU & Rust Platform</title>
   <meta name="description" content="Production-grade AI subtitle generator powered by Rust concurrency and NVIDIA CUDA Whisper models with interactive video subtitle editor.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -27,6 +28,14 @@
           <h1>Whisper Subtitle Studio</h1>
           <p class="subtitle">Multi-User AI Studio • Rust Concurrency Core & NVIDIA CUDA Acceleration</p>
         </div>
+      </div>
+      <div class="header-utility-actions">
+        <button type="button" class="theme-toggle-btn" id="themeToggleBtn" title="Toggle Dark/Light Mode" aria-label="Toggle Theme">
+          <span id="themeToggleIcon">🌙</span>
+        </button>
+        <button type="button" class="sound-toggle-btn" id="soundToggleBtn" title="Toggle Sound Chime" aria-label="Toggle Sound">
+          <span id="soundToggleIcon">🔔</span>
+        </button>
       </div>
 
       <!-- Engine Badges -->
@@ -61,6 +70,27 @@
       </div>
     </header>
 
+    <!-- Studio Touch-Friendly Stepper Navigation -->
+    <nav class="studio-stepper" id="studioStepper">
+      <button type="button" class="step-btn active" id="stepBtnSetup" data-step="setup">
+        <span class="step-num">1</span>
+        <span class="step-label">Upload & Settings</span>
+        <span class="step-badge" id="stepBatchCount">0</span>
+      </button>
+      <div class="step-divider"></div>
+      <button type="button" class="step-btn" id="stepBtnProgress" data-step="progress">
+        <span class="step-num">2</span>
+        <span class="step-label">GPU Transcribe</span>
+        <span class="step-badge hidden" id="stepProgressBadge">0%</span>
+      </button>
+      <div class="step-divider"></div>
+      <button type="button" class="step-btn" id="stepBtnStudio" data-step="studio">
+        <span class="step-num">3</span>
+        <span class="step-label">Subtitle Studio</span>
+        <span class="step-badge hidden" id="stepStudioBadge">Ready</span>
+      </button>
+    </nav>
+
     <!-- 1-Click CUDA Acceleration Notification Banner (Appears if NVIDIA GPU is present without CUDA runtime) -->
     <div class="cuda-notice-banner hidden" id="cudaNoticeBanner">
       <div class="cuda-notice-left">
@@ -83,9 +113,20 @@
       <section class="card" id="setupSection">
         <div class="card-header">
           <h2>1. Video Upload & Model Settings</h2>
-          <div style="display:flex; gap:8px; align-items:center;">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <span class="badge badge-turbo">⚡ 170x Batched Acceleration</span>
             <span class="badge">Batch Queue Supported</span>
+          </div>
+        </div>
+
+        <!-- 1-Click Workflow Presets Bar -->
+        <div class="presets-bar" id="presetsBar">
+          <span class="presets-label">⚡ Quick Presets:</span>
+          <div class="presets-scroll">
+            <button type="button" class="preset-pill active" data-preset="turbo">🚀 170x Turbo (Fast)</button>
+            <button type="button" class="preset-pill" data-preset="deep_clean">🧠 AI Vocal & Music Clean</button>
+            <button type="button" class="preset-pill" data-preset="sensevoice">🎯 Emotion & Speed (SenseVoice)</button>
+            <button type="button" class="preset-pill" data-preset="cinema">👑 Maximum Accuracy (Large-v3)</button>
           </div>
         </div>
 
@@ -392,6 +433,19 @@
                 </select>
               </div>
               <button type="button" class="btn-tool active" id="toggleSubtitleOverlayBtn" title="Toggle subtitle overlay on video">💬 Overlay ON</button>
+              <button type="button" class="btn-tool active" id="toggleAutoScrollBtn" title="Auto-scroll table to current subtitle">📜 Auto-Scroll: ON</button>
+              <div class="overlay-style-group">
+                <select id="overlayStyleSelect" class="form-select form-select-sm" title="Subtitle visual theme">
+                  <option value="netflix" selected>Netflix Box</option>
+                  <option value="yellow">Yellow Cinema</option>
+                  <option value="white">Clean White</option>
+                </select>
+                <select id="overlaySizeSelect" class="form-select form-select-sm" title="Subtitle font size">
+                  <option value="small">Aa Small</option>
+                  <option value="medium" selected>Aa Medium</option>
+                  <option value="large">Aa Large</option>
+                </select>
+              </div>
             </div>
             <div class="video-meta-hint">
               <span>💡 <strong>Tip:</strong> Click any subtitle row or timestamp to instantly seek the video to that moment. Edit typos directly in the table.</span>
@@ -447,7 +501,23 @@
         </div>
       </section>
 
+          <!-- Sticky Bottom Action Bar for Mobile Touchscreens -->
+      <div class="mobile-bottom-bar" id="mobileBottomBar">
+        <button type="button" class="btn btn-primary btn-large btn-mobile-action" id="mobileGenerateBtn" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-svg">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <span id="mobileGenerateBtnText">Generate Subtitles (.SRT)</span>
+        </button>
+        <div class="mobile-studio-actions hidden" id="mobileStudioActions">
+          <button type="button" class="btn btn-emerald btn-mobile-half" id="mobileDownloadSrtBtn">📥 Download .SRT</button>
+          <button type="button" class="btn btn-primary btn-mobile-half" id="mobileSaveEditsBtn">💾 Save Edits</button>
+        </div>
+      </div>
     </main>
+
+    <!-- Floating Toast Notification System -->
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
     <footer class="app-footer">
       <p>Whisper Studio • Rust Concurrency Core & Hardware-Accelerated Transcription • Intermediate audio files are automatically purged</p>
