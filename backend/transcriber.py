@@ -423,28 +423,38 @@ def extract_audio_ffmpeg(
         "-ac", "1",
         str(output_audio_path)
     ])
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-    target_bytes = (total_duration * 32000.0) if total_duration > 0 else 0
-    while proc.poll() is None:
-        time.sleep(0.25)
-        if progress_cb and target_bytes > 0 and Path(output_audio_path).exists():
-            try:
-                cur_bytes = os.path.getsize(output_audio_path)
-                cur_sec = min(total_duration, cur_bytes / 32000.0)
-                pct = round(min(15.0, max(1.0, (cur_bytes / target_bytes) * 15.0)), 1)
-                curr_fmt = format_time_min_sec(cur_sec)
-                total_fmt = format_time_min_sec(total_duration)
-                progress_cb({
-                    "step": "extracting_audio",
-                    "progress": pct,
-                    "message": f"⚡ Fast Audio Extract: {curr_fmt} / {total_fmt} ({pct}%) • High-Speed DSP...",
-                    "duration": total_duration
-                })
-            except Exception:
-                pass
-    stdout, stderr = proc.communicate()
+    err_log = Path(output_audio_path).parent / f"{Path(output_audio_path).stem}_ffmpeg.log"
+    with open(err_log, "w", encoding="utf-8", errors="replace") as err_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_f)
+        target_bytes = (total_duration * 32000.0) if total_duration > 0 else 0
+        while proc.poll() is None:
+            time.sleep(0.25)
+            if progress_cb and target_bytes > 0 and Path(output_audio_path).exists():
+                try:
+                    cur_bytes = os.path.getsize(output_audio_path)
+                    cur_sec = min(total_duration, cur_bytes / 32000.0)
+                    pct = round(min(15.0, max(1.0, (cur_bytes / target_bytes) * 15.0)), 1)
+                    curr_fmt = format_time_min_sec(cur_sec)
+                    total_fmt = format_time_min_sec(total_duration)
+                    progress_cb({
+                        "step": "extracting_audio",
+                        "progress": pct,
+                        "message": f"⚡ Fast Audio Extract: {curr_fmt} / {total_fmt} ({pct}%) • High-Speed DSP...",
+                        "duration": total_duration
+                    })
+                except Exception:
+                    pass
+        proc.wait()
+
     if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg extraction failed: {stderr}")
+        err_msg = err_log.read_text(encoding="utf-8", errors="replace") if err_log.exists() else "Unknown error"
+        raise RuntimeError(f"FFmpeg extraction failed: {err_msg}")
+
+    try:
+        if err_log.exists():
+            err_log.unlink()
+    except Exception:
+        pass
     return True
 
 def smart_segment_splitter(segment, max_duration=6.5, max_words=12, pause_thresh=1.5) -> List[Dict[str, Any]]:
