@@ -1834,26 +1834,26 @@ function applyPreset(preset) {
     if (modelSelect) modelSelect.value = "base";
     if (noiseReductionSelect) noiseReductionSelect.value = "studio";
     if (turboToggle) turboToggle.checked = true;
-    if (coverageSelect) coverageSelect.value = "full";
-    showToast("⚡ Preset applied: 170x Turbo (Fast)", "success");
+    if (coverageSelect) coverageSelect.value = "vad";
+    showToast("⚡ Preset applied: 170x Turbo (Ultra-Fast VAD on GPU)", "success");
   } else if (preset === "deep_clean") {
     if (modelSelect) modelSelect.value = "base";
-    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (noiseReductionSelect) noiseReductionSelect.value = "studio";
     if (turboToggle) turboToggle.checked = true;
-    if (coverageSelect) coverageSelect.value = "full";
-    showToast("🧠 Preset applied: AI Voice Isolation & Music Removal (UVR MDX-Net + GTCRN)", "success");
+    if (coverageSelect) coverageSelect.value = "vad";
+    showToast("🧠 Preset applied: Studio Voice Clarity (Instant DSP)", "success");
   } else if (preset === "sensevoice") {
     if (modelSelect) modelSelect.value = "sensevoice-small";
-    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (noiseReductionSelect) noiseReductionSelect.value = "studio";
     if (turboToggle) turboToggle.checked = true;
-    if (coverageSelect) coverageSelect.value = "full";
-    showToast("🎯 Preset applied: Alibaba SenseVoice-Small with Deep Clean", "success");
+    if (coverageSelect) coverageSelect.value = "vad";
+    showToast("🎯 Preset applied: SenseVoice-Small with Studio DSP", "success");
   } else if (preset === "cinema") {
     if (modelSelect) modelSelect.value = "large-v3-turbo";
-    if (noiseReductionSelect) noiseReductionSelect.value = "deep_clean";
+    if (noiseReductionSelect) noiseReductionSelect.value = "studio";
     if (turboToggle) turboToggle.checked = true;
-    if (coverageSelect) coverageSelect.value = "full";
-    showToast("👑 Preset applied: Cinema SOTA (Large-v3 Turbo + Deep Clean)", "success");
+    if (coverageSelect) coverageSelect.value = "vad";
+    showToast("👑 Preset applied: Cinema SOTA (Large-v3 Turbo + Studio DSP)", "success");
   }
 }
 

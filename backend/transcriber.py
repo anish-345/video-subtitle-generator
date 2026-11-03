@@ -381,38 +381,38 @@ def get_gpu_info() -> Dict[str, Any]:
 
 AUDIO_FILTER_PRESETS = {
     "studio": (
-        "highpass=f=80,lowpass=f=12000,"
-        "afftdn=nr=14:nf=-25:tn=1,"
-        "equalizer=f=300:width_type=q:width=1.5:gain=-2,"
-        "equalizer=f=2800:width_type=q:width=1.2:gain=4,"
-        "equalizer=f=5000:width_type=q:width=1.5:gain=2,"
-        "dynaudnorm=f=125:g=15:p=0.95:m=10.0:r=0.9"
+        "highpass=f=80,lowpass=f=8000,"
+        "afftdn=nr=10:nf=-25:tn=1,"
+        "volume=1.5"
     ),
     "aggressive": (
-        "highpass=f=95,lowpass=f=10500,"
-        "afftdn=nr=20:nf=-20:tn=1,"
-        "agate=threshold=0.018:ratio=2.5:range=0.04:attack=10:release=120,"
-        "equalizer=f=300:width_type=q:width=1.5:gain=-3,"
-        "equalizer=f=3000:width_type=q:width=1.2:gain=5,"
-        "dynaudnorm=f=100:g=15:p=0.95:m=12.0:r=0.9"
+        "highpass=f=95,lowpass=f=8000,"
+        "afftdn=nr=16:nf=-20:tn=1,"
+        "volume=1.8"
     ),
     "vocal_boost": (
-        "highpass=f=75,lowpass=f=12000,"
-        "afftdn=nr=8:nf=-30:tn=1,"
-        "equalizer=f=2500:width_type=q:width=1.2:gain=4.5,"
-        "dynaudnorm=f=150:g=20:p=0.95:m=15.0:r=0.95"
+        "highpass=f=100,lowpass=f=7500,"
+        "equalizer=f=300:width_type=q:width=1.5:gain=-3,"
+        "equalizer=f=2800:width_type=q:width=1.2:gain=5,"
+        "volume=1.4"
     ),
     "off": None
 }
 
-def extract_audio_ffmpeg(input_video_path: str | Path, output_audio_path: str | Path, noise_preset: str = "studio") -> bool:
-    """Extract audio stream from video to 16kHz mono WAV suitable for Whisper with optional acoustic noise cancellation & voice clarity."""
+def extract_audio_ffmpeg(
+    input_video_path: str | Path,
+    output_audio_path: str | Path,
+    noise_preset: str = "studio",
+    progress_cb=None,
+    total_duration: float = 0.0
+) -> bool:
+    """Extract audio stream from video to 16kHz mono WAV at maximum speed with live progress."""
     cmd = [
         FFMPEG_PATH,
         "-y",
         "-threads", "0",
         "-i", str(input_video_path),
-        "-vn"
+        "-vn", "-sn", "-dn"
     ]
     af = AUDIO_FILTER_PRESETS.get(noise_preset)
     if af:
@@ -423,9 +423,28 @@ def extract_audio_ffmpeg(input_video_path: str | Path, output_audio_path: str | 
         "-ac", "1",
         str(output_audio_path)
     ])
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg extraction failed: {result.stderr}")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    target_bytes = (total_duration * 32000.0) if total_duration > 0 else 0
+    while proc.poll() is None:
+        time.sleep(0.25)
+        if progress_cb and target_bytes > 0 and Path(output_audio_path).exists():
+            try:
+                cur_bytes = os.path.getsize(output_audio_path)
+                cur_sec = min(total_duration, cur_bytes / 32000.0)
+                pct = round(min(15.0, max(1.0, (cur_bytes / target_bytes) * 15.0)), 1)
+                curr_fmt = format_time_min_sec(cur_sec)
+                total_fmt = format_time_min_sec(total_duration)
+                progress_cb({
+                    "step": "extracting_audio",
+                    "progress": pct,
+                    "message": f"⚡ Fast Audio Extract: {curr_fmt} / {total_fmt} ({pct}%) • High-Speed DSP...",
+                    "duration": total_duration
+                })
+            except Exception:
+                pass
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg extraction failed: {stderr}")
     return True
 
 def smart_segment_splitter(segment, max_duration=6.5, max_words=12, pause_thresh=1.5) -> List[Dict[str, Any]]:
@@ -650,27 +669,25 @@ class WhisperService:
                 if success and clean_audio_path and clean_audio_path.exists():
                     clean_audio_file = str(clean_audio_path)
                 elif not success:
-                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio")
+                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio", progress_cb=progress_callback, total_duration=total_duration)
             else:
-                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
+                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction, progress_cb=progress_callback, total_duration=total_duration)
                 if noise_reduction != "off" and clean_audio_path:
-                    try:
-                        af = AUDIO_FILTER_PRESETS.get(noise_reduction)
-                        cmd_clean = [
-                            FFMPEG_PATH, "-y", "-threads", "0",
-                            "-i", str(video_path), "-vn"
-                        ]
-                        if af:
-                            cmd_clean.extend(["-af", af])
-                        cmd_clean.extend([
-                            "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                            str(clean_audio_path)
-                        ])
-                        res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-                        if res_c.returncode == 0 and clean_audio_path.exists():
-                            clean_audio_file = str(clean_audio_path)
-                    except Exception as e:
-                        print(f"[Clean audio notice] {e}")
+                    # Non-blocking async encoding from already-filtered WAV directly to MP3 (instant, zero GPU wait!)
+                    def _bg_encode_clean(src_wav, dst_mp3):
+                        try:
+                            cmd_clean = [
+                                FFMPEG_PATH, "-y", "-threads", "0",
+                                "-i", str(src_wav),
+                                "-c:a", "libmp3lame", "-b:a", "128k",
+                                str(dst_mp3)
+                            ]
+                            subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        except Exception as e:
+                            print(f"[Clean audio notice] {e}")
+                    import threading
+                    threading.Thread(target=_bg_encode_clean, args=(extracted_audio, clean_audio_path), daemon=True).start()
+                    clean_audio_file = str(clean_audio_path)
             
             if total_duration <= 0:
                 total_duration = get_audio_duration(extracted_audio)
@@ -712,21 +729,41 @@ class WhisperService:
                 speech_pad_ms=500
             )
 
-            # Transcribe full audio with word-level timestamps and anti-dropout settings
-            segments, info = model.transcribe(
-                str(extracted_audio),
-                language=lang_param,
-                task=task,
-                beam_size=beam_size,
-                word_timestamps=True,
-                condition_on_previous_text=False,
-                no_speech_threshold=0.80,
-                log_prob_threshold=-1.2,
-                hallucination_silence_threshold=2.0,
-                temperature=[0.0, 0.2, 0.4, 0.6, 0.8],
-                vad_filter=vad_filter,
-                vad_parameters=vad_config if vad_filter else None
-            )
+            # High-Performance GPU Batched Inference (maximizes RTX 3050 CUDA cores)
+            if turbo_mode and active_device == "cuda":
+                from faster_whisper import BatchedInferencePipeline
+                effective_batch = batch_size if (batch_size and batch_size > 1) else 16
+                pipeline = BatchedInferencePipeline(model=model)
+                segments, info = pipeline.transcribe(
+                    str(extracted_audio),
+                    batch_size=effective_batch,
+                    language=lang_param,
+                    task=task,
+                    beam_size=beam_size,
+                    word_timestamps=True,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.80,
+                    log_prob_threshold=-1.2,
+                    hallucination_silence_threshold=2.0,
+                    temperature=[0.0, 0.2],
+                    vad_filter=vad_filter,
+                    vad_parameters=vad_config if vad_filter else None
+                )
+            else:
+                segments, info = model.transcribe(
+                    str(extracted_audio),
+                    language=lang_param,
+                    task=task,
+                    beam_size=beam_size,
+                    word_timestamps=True,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.80,
+                    log_prob_threshold=-1.2,
+                    hallucination_silence_threshold=2.0,
+                    temperature=[0.0, 0.2] if turbo_mode else [0.0, 0.2, 0.4, 0.6, 0.8],
+                    vad_filter=vad_filter,
+                    vad_parameters=vad_config if vad_filter else None
+                )
 
             detected_lang = info.language
             detected_prob = round(info.language_probability * 100, 1)
@@ -756,11 +793,12 @@ class WhisperService:
                     speedup_factor = round(last_end_time / elapsed_time, 1)
 
                     if total_duration > 0:
-                        exact_pct = round(min(100.0, max(0.0, (last_end_time / total_duration) * 100.0)), 1)
+                        audio_ratio = min(1.0, max(0.0, last_end_time / total_duration))
+                        exact_pct = round(15.0 + (audio_ratio * 80.0), 1)
                         remaining_audio = max(0.0, total_duration - last_end_time)
                         eta_sec = round(remaining_audio / max(0.1, speedup_factor), 1)
                     else:
-                        exact_pct = min(98.0, round(seg_index * 2.0, 1))
+                        exact_pct = min(95.0, round(15.0 + seg_index * 1.5, 1))
                         eta_sec = 0.0
 
                     curr_fmt = format_time_min_sec(last_end_time)
@@ -1097,27 +1135,25 @@ class SenseVoiceService:
                 if success and clean_audio_path and clean_audio_path.exists():
                     clean_audio_file = str(clean_audio_path)
                 elif not success:
-                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio")
+                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio", progress_cb=progress_callback, total_duration=total_duration)
             else:
-                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
+                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction, progress_cb=progress_callback, total_duration=total_duration)
                 if noise_reduction != "off" and clean_audio_path:
-                    try:
-                        af = AUDIO_FILTER_PRESETS.get(noise_reduction)
-                        cmd_clean = [
-                            FFMPEG_PATH, "-y", "-threads", "0",
-                            "-i", str(video_path), "-vn"
-                        ]
-                        if af:
-                            cmd_clean.extend(["-af", af])
-                        cmd_clean.extend([
-                            "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                            str(clean_audio_path)
-                        ])
-                        res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-                        if res_c.returncode == 0 and clean_audio_path.exists():
-                            clean_audio_file = str(clean_audio_path)
-                    except Exception as e:
-                        print(f"[Clean audio notice] {e}")
+                    # Non-blocking async encoding from already-filtered WAV directly to MP3 (instant, zero GPU wait!)
+                    def _bg_encode_clean(src_wav, dst_mp3):
+                        try:
+                            cmd_clean = [
+                                FFMPEG_PATH, "-y", "-threads", "0",
+                                "-i", str(src_wav),
+                                "-c:a", "libmp3lame", "-b:a", "128k",
+                                str(dst_mp3)
+                            ]
+                            subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        except Exception as e:
+                            print(f"[Clean audio notice] {e}")
+                    import threading
+                    threading.Thread(target=_bg_encode_clean, args=(extracted_audio, clean_audio_path), daemon=True).start()
+                    clean_audio_file = str(clean_audio_path)
             if total_duration <= 0:
                 total_duration = get_audio_duration(extracted_audio)
 
