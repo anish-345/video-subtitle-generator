@@ -10,8 +10,9 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 SUBTITLES_DIR = DATA_DIR / "subtitles"
 TEMP_DIR = DATA_DIR / "temp"
 OUTPUTS_DIR = DATA_DIR / "outputs"
+MODELS_DIR = DATA_DIR / "models"
 
-for directory in [UPLOADS_DIR, SUBTITLES_DIR, TEMP_DIR, OUTPUTS_DIR]:
+for directory in [UPLOADS_DIR, SUBTITLES_DIR, TEMP_DIR, OUTPUTS_DIR, MODELS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 def find_ffmpeg() -> str:

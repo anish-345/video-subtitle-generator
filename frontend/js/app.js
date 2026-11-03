@@ -1084,6 +1084,9 @@ function finishJob(result) {
 
   if (statNoise) {
     const nMap = {
+      "deep_clean": "🧠 AI: Isolated Vocals + Music Removed",
+      "music_removal": "🎵 AI: Background Music Removed",
+      "denoise_ai": "🤖 AI: Deep Learning Speech Denoised",
       "studio": "🎙️ Denoised: Studio Clarity",
       "aggressive": "🌪️ Denoised: Aggressive",
       "vocal_boost": "🔊 Denoised: Voice Boost",

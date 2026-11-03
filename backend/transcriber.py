@@ -1,3 +1,4 @@
+from backend.audio_cleaner import deep_audio_enhancer
 import os
 import sys
 import re
@@ -610,9 +611,12 @@ class WhisperService:
         try:
             total_duration = get_audio_duration(video_path)
             noise_label = {
-                "studio": "Studio Voice Clarity",
-                "aggressive": "Aggressive Noise Removal",
-                "vocal_boost": "Voice Boost & Leveling",
+                "deep_clean": "🧠 Deep Learning: Music Removal & Vocal Isolation",
+                "music_removal": "🎵 Background Music & Song Removal (UVR MDX-Net)",
+                "denoise_ai": "🤖 Deep Learning Speech Denoiser (GTCRN AI)",
+                "studio": "✨ Studio Voice Clarity (Spectral DSP)",
+                "aggressive": "🌪️ Aggressive Noise Removal",
+                "vocal_boost": "🔊 Voice Boost & Leveling",
                 "off": "Off (Unfiltered)"
             }.get(noise_reduction, "Studio Voice Clarity")
 
@@ -624,29 +628,49 @@ class WhisperService:
                     "duration": total_duration
                 })
 
-            extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
-
-            # Generate high-quality clean audio for preview/download if noise reduction is active
             clean_audio_file = None
-            if noise_reduction != "off":
-                clean_audio_path = OUTPUTS_DIR / f"{job_id}_clean_audio.mp3"
-                try:
-                    af = AUDIO_FILTER_PRESETS.get(noise_reduction)
-                    cmd_clean = [
-                        FFMPEG_PATH, "-y", "-threads", "0",
-                        "-i", str(video_path), "-vn"
-                    ]
-                    if af:
-                        cmd_clean.extend(["-af", af])
-                    cmd_clean.extend([
-                        "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                        str(clean_audio_path)
-                    ])
-                    res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-                    if res_c.returncode == 0 and clean_audio_path.exists():
-                        clean_audio_file = str(clean_audio_path)
-                except Exception as e:
-                    print(f"[Clean audio notice] {e}")
+            clean_audio_path = OUTPUTS_DIR / f"{job_id}_clean_audio.mp3" if noise_reduction != "off" else None
+
+            if noise_reduction in ("deep_clean", "music_removal", "denoise_ai"):
+                def on_enhancer_prog(msg):
+                    if progress_callback:
+                        progress_callback({
+                            "step": "extracting_audio",
+                            "progress": 8,
+                            "message": msg,
+                            "duration": total_duration
+                        })
+                success = deep_audio_enhancer.process_enhancement(
+                    video_path=video_path,
+                    output_16k_audio=extracted_audio,
+                    mode=noise_reduction,
+                    clean_mp3_path=clean_audio_path,
+                    progress_cb=on_enhancer_prog
+                )
+                if success and clean_audio_path and clean_audio_path.exists():
+                    clean_audio_file = str(clean_audio_path)
+                elif not success:
+                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio")
+            else:
+                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
+                if noise_reduction != "off" and clean_audio_path:
+                    try:
+                        af = AUDIO_FILTER_PRESETS.get(noise_reduction)
+                        cmd_clean = [
+                            FFMPEG_PATH, "-y", "-threads", "0",
+                            "-i", str(video_path), "-vn"
+                        ]
+                        if af:
+                            cmd_clean.extend(["-af", af])
+                        cmd_clean.extend([
+                            "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
+                            str(clean_audio_path)
+                        ])
+                        res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+                        if res_c.returncode == 0 and clean_audio_path.exists():
+                            clean_audio_file = str(clean_audio_path)
+                    except Exception as e:
+                        print(f"[Clean audio notice] {e}")
             
             if total_duration <= 0:
                 total_duration = get_audio_duration(extracted_audio)
@@ -1034,9 +1058,12 @@ class SenseVoiceService:
         try:
             total_duration = get_audio_duration(video_path)
             noise_label = {
-                "studio": "Studio Voice Clarity",
-                "aggressive": "Aggressive Noise Removal",
-                "vocal_boost": "Voice Boost & Leveling",
+                "deep_clean": "🧠 Deep Learning: Music Removal & Vocal Isolation",
+                "music_removal": "🎵 Background Music & Song Removal (UVR MDX-Net)",
+                "denoise_ai": "🤖 Deep Learning Speech Denoiser (GTCRN AI)",
+                "studio": "✨ Studio Voice Clarity (Spectral DSP)",
+                "aggressive": "🌪️ Aggressive Noise Removal",
+                "vocal_boost": "🔊 Voice Boost & Leveling",
                 "off": "Off (Unfiltered)"
             }.get(noise_reduction, "Studio Voice Clarity")
 
@@ -1048,29 +1075,49 @@ class SenseVoiceService:
                     "duration": total_duration
                 })
 
-            extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
-
-            # Generate high-quality clean audio for preview/download if noise reduction is active
             clean_audio_file = None
-            if noise_reduction != "off":
-                clean_audio_path = OUTPUTS_DIR / f"{job_id}_clean_audio.mp3"
-                try:
-                    af = AUDIO_FILTER_PRESETS.get(noise_reduction)
-                    cmd_clean = [
-                        FFMPEG_PATH, "-y", "-threads", "0",
-                        "-i", str(video_path), "-vn"
-                    ]
-                    if af:
-                        cmd_clean.extend(["-af", af])
-                    cmd_clean.extend([
-                        "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                        str(clean_audio_path)
-                    ])
-                    res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
-                    if res_c.returncode == 0 and clean_audio_path.exists():
-                        clean_audio_file = str(clean_audio_path)
-                except Exception as e:
-                    print(f"[Clean audio notice] {e}")
+            clean_audio_path = OUTPUTS_DIR / f"{job_id}_clean_audio.mp3" if noise_reduction != "off" else None
+
+            if noise_reduction in ("deep_clean", "music_removal", "denoise_ai"):
+                def on_enhancer_prog(msg):
+                    if progress_callback:
+                        progress_callback({
+                            "step": "extracting_audio",
+                            "progress": 8,
+                            "message": msg,
+                            "duration": total_duration
+                        })
+                success = deep_audio_enhancer.process_enhancement(
+                    video_path=video_path,
+                    output_16k_audio=extracted_audio,
+                    mode=noise_reduction,
+                    clean_mp3_path=clean_audio_path,
+                    progress_cb=on_enhancer_prog
+                )
+                if success and clean_audio_path and clean_audio_path.exists():
+                    clean_audio_file = str(clean_audio_path)
+                elif not success:
+                    extract_audio_ffmpeg(video_path, extracted_audio, noise_preset="studio")
+            else:
+                extract_audio_ffmpeg(video_path, extracted_audio, noise_preset=noise_reduction)
+                if noise_reduction != "off" and clean_audio_path:
+                    try:
+                        af = AUDIO_FILTER_PRESETS.get(noise_reduction)
+                        cmd_clean = [
+                            FFMPEG_PATH, "-y", "-threads", "0",
+                            "-i", str(video_path), "-vn"
+                        ]
+                        if af:
+                            cmd_clean.extend(["-af", af])
+                        cmd_clean.extend([
+                            "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
+                            str(clean_audio_path)
+                        ])
+                        res_c = subprocess.run(cmd_clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+                        if res_c.returncode == 0 and clean_audio_path.exists():
+                            clean_audio_file = str(clean_audio_path)
+                    except Exception as e:
+                        print(f"[Clean audio notice] {e}")
             if total_duration <= 0:
                 total_duration = get_audio_duration(extracted_audio)
 

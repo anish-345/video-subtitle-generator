@@ -94,8 +94,26 @@ struct AppState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
     let cur = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let base_dir = if cur.join("frontend").exists() {
+
+    let base_dir = if let Some(ref ed) = exe_dir {
+        if ed.join("frontend").exists() {
+            ed.clone()
+        } else if cur.join("frontend").exists() {
+            cur
+        } else if let Some(p) = cur.parent() {
+            if p.join("frontend").exists() {
+                p.to_path_buf()
+            } else {
+                ed.clone()
+            }
+        } else {
+            ed.clone()
+        }
+    } else if cur.join("frontend").exists() {
         cur
     } else if let Some(p) = cur.parent() {
         if p.join("frontend").exists() {
@@ -173,7 +191,7 @@ async fn main() {
                 Ok(mut child) => {
                     println!("✓ GPU Whisper Worker process spawned (PID {}). Waiting for port 8001...", child.id());
                     let mut ready = false;
-                    for _ in 0..24 {
+                    for _ in 0..60 {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         if let Ok(Some(status)) = child.try_wait() {
                             eprintln!("❌ Python worker exited prematurely with status: {status}");
@@ -310,10 +328,19 @@ async fn get_system_status(State(state): State<AppState>) -> impl IntoResponse {
         .into_response()
 }
 
+
+fn json_error(status: StatusCode, msg: &str) -> (StatusCode, [(header::HeaderName, &'static str); 1], Vec<u8>) {
+    let json = serde_json::json!({
+        "detail": msg,
+        "error": msg
+    });
+    (status, [(header::CONTENT_TYPE, "application/json")], json.to_string().into_bytes())
+}
+
 async fn handle_transcribe(
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> Result<impl IntoResponse, (StatusCode, [(header::HeaderName, &'static str); 1], Vec<u8>)> {
     let job_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     let mut filename = "uploaded_video.mp4".to_string();
     let mut model_size = "base".to_string();
@@ -324,7 +351,7 @@ async fn handle_transcribe(
     let mut noise_reduction = "studio".to_string();
     let mut saved_file_path: Option<PathBuf> = None;
 
-    while let Some(mut field) = multipart.next_field().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| json_error(StatusCode::BAD_REQUEST, &e.to_string()))? {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
             if let Some(fname) = field.file_name() {
@@ -337,17 +364,17 @@ async fn handle_transcribe(
             let dest_path = state.uploads_dir.join(format!("{job_id}_{sanitized}"));
 
             let mut file = tokio::fs::File::create(&dest_path).await.map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create destination file: {e}"))
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to create destination file: {e}"))
             })?;
 
             // Stream chunks directly from network to disk (zero RAM buffering)
-            while let Some(chunk) = field.chunk().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+            while let Some(chunk) = field.chunk().await.map_err(|e| json_error(StatusCode::BAD_REQUEST, &e.to_string()))? {
                 file.write_all(&chunk).await.map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write chunk: {e}"))
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to write chunk: {e}"))
                 })?;
             }
             file.flush().await.map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to flush file: {e}"))
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to flush file: {e}"))
             })?;
 
             saved_file_path = Some(dest_path);
@@ -373,7 +400,7 @@ async fn handle_transcribe(
     }
 
     let Some(dest_path) = saved_file_path else {
-        return Err((StatusCode::BAD_REQUEST, "No file provided".to_string()));
+        return Err(json_error(StatusCode::BAD_REQUEST, "No file provided"));
     };
 
     // BUG-09 Fix: Only count toward GPU queue after file upload has completed
@@ -391,7 +418,7 @@ async fn handle_transcribe(
 
     // Acquire GPU Permit (Queue serialization - only 1 GPU job at a time to protect 6GB VRAM)
     let _permit = state.gpu_semaphore.acquire().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("GPU Semaphore error: {e}"))
+        json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("GPU Semaphore error: {e}"))
     })?;
 
 
@@ -451,7 +478,7 @@ async fn handle_transcribe(
     };
 
     let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::OK);
-    let body_bytes = res.bytes().await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let body_bytes = res.bytes().await.map_err(|e| json_error(StatusCode::BAD_GATEWAY, &e.to_string()))?;
 
     Ok((status, [(header::CONTENT_TYPE, "application/json")], body_bytes.to_vec()))
 }
@@ -472,7 +499,12 @@ async fn proxy_job_stream(
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             (StatusCode::OK, headers, body).into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("Stream proxy error: {e}")).into_response(),
+        Err(e) => {
+            let error_sse = format!("event: error\ndata: {}\n\n", serde_json::json!({"error": e.to_string(), "message": format!("Worker stream connection failed: {e}")}));
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+            (StatusCode::OK, headers, Body::from(error_sse)).into_response()
+        }
     }
 }
 
